@@ -1,21 +1,108 @@
-stuntcarracer
-=============
+Stunt Car Racer game
 
-Fork of stuntcarremake from sourceforge: http://sourceforge.net/projects/stuntcarremake/
+I used to love this game when I was a kid.
 
-Fomr the original SourceForge page:
+## About
 
-> About.
-> This is a partial Windows conversion of the classic computer game Stunt Car Racer.  
-> The game is based on the original Commodore Amiga version.
-> It is written in C/C++ and utilises DirectX/Direct3D.
-> 
-> The game uses the original Amiga track data, sound samples and algorithms for the car physics (all of which were copyright Geoff Crammond / MicroStyle / MicroProse and now copyright the current owners which are believed to be Infogrames or Interactive Game Group).
+Stunt Car Racer (published as *Stunt Track Racer* in the US) is a racing game
+designed by Geoff Crammond and published in 1989 by MicroProse under their
+MicroStyle and MicroPlay labels. Original versions were released for the Amiga,
+Atari ST, Commodore 64, MS-DOS and ZX Spectrum, with an Amstrad CPC port
+following in 1990. Two players race head-to-head on an elevated track, with
+ramps that must be driven off correctly forming the main obstacle. The game was
+released to critical acclaim — the Commodore 64 version's use of 3D vector
+graphics drew particular praise, which was unusual for that platform at the
+time.
 
-Stunt Car Racer for PC/Windows
-This is a Windows conversion of classic computer game Stunt Car Racer.
+This project is a Windows C++ port based on
+[stuntcarremake](http://sourceforge.net/projects/stuntcarremake/) from
+SourceForge.
 
-* This is a partial Windows conversion of the classic computer game Stunt Car Racer.
-* The game is based on the original Commodore Amiga version.
-* It is written in C/C++ and utilises DirectX/Direct3D.
-* The game uses the original Amiga track data, sound samples and algorithms for the car physics.
+## Rendering
+
+This version uses an entirely **software 3D renderer** — no Direct3D, OpenGL or
+GPU acceleration. The pixels presented to the window are produced by code in
+[src/render.software.cpp](src/render.software.cpp). Notable algorithms:
+
+- 4×4 row-major matrix pipeline (world / view / perspective projection)
+- Homogeneous clip-space near-plane triangle clipping (Sutherland–Hodgman style)
+- Edge-function triangle rasterizer with perspective-correct attribute
+  interpolation via 1/w
+- Z-buffer depth testing
+- Backface culling (clockwise / counter-clockwise / none)
+- Per-face flat shading with a single directional light (Lambertian diffuse +
+  ambient)
+- Affine 2D primitives for HUD, text and screen-space fans
+
+The final RGBA framebuffer is blitted to the window with `SetDIBitsToDevice`.
+
+## Building
+
+You need **Visual Studio** (with the Desktop C++ workload installed) to build
+this project. Open [game.sln](game.sln) and build the **Debug | Win32** or
+**Release | Win32** configuration, or run the *Build Debug Win32* / *Build
+Release Win32* task from VS Code. The output `StuntCarRacer.exe` is written
+under `output/Win32/<Configuration>/`.
+
+The game is a single EXE file. All game data (tracks and sound) are contained as resources.
+
+## How to Play
+
+Stunt Car Racer is an arcade racing game where you race head-to-head against an opponent on elevated stunt tracks. Your goal is to finish the lap ahead of your opponent while managing boost and avoiding damage.
+
+### Controls
+
+#### Driving (in-race)
+
+| Key | Action |
+|-----|--------|
+| **Up Arrow** | Accelerate |
+| **Down Arrow** | Brake |
+| **Left Arrow** | Steer left |
+| **Right Arrow** | Steer right |
+| **Ctrl + Up** | Activate boost (uses boost reserve) |
+| **Space** | Toggle inside/outside camera |
+
+#### Track Menu
+
+| Key | Action |
+|-----|--------|
+| **Left / Right** | Previous / next track |
+| **Up / Down** | Cycle scenery type |
+| **1–8** | Select track directly |
+| **S** or **Space** | Open track preview (uses the default track, *Little Ramp*, if none has been selected) |
+
+#### Track Preview
+
+| Key | Action |
+|-----|--------|
+| **S** or **Space** | Start race |
+| **Esc** | Back to track menu |
+
+#### General
+
+| Key | Action |
+|-----|--------|
+| **Esc** | Back to menu |
+| **F5** | Show statistics |
+| **F6** | Pause player car |
+| **F7** | Pause opponent car |
+| **F9 / F10** | Increase / decrease game speed |
+
+Pause, Resume and Reverse Car are available from the **Game** menu (with the
+usual Alt-mnemonics: Alt+G then P / E / R).
+
+### Tracks
+
+1. Little Ramp
+2. Stepping Stones
+3. Hump Back
+4. Big Ramp
+5. Ski Jump
+6. Draw Bridge
+7. High Jump
+8. Roller Coaster
+
+
+
+
