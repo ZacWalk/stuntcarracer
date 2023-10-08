@@ -1,8 +1,14 @@
-Debug/
-Release/
+src/output/
 ipch/
+.vs/
 *.suo
 *.sdf
 *.opensdf
 *.vcxproj.user
 SCRLog.txt
+intermediate/
+exe/
+debug_trace.log
+debug.txt
+test_results.log
+
