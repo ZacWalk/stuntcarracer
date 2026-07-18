@@ -11,6 +11,8 @@
 //   - World transform matrices for the player car, opponent car and track
 //
 
+#include <algorithm>
+#include <cmath>
 #include <ctime>
 
 #include "platform.h"
@@ -22,7 +24,19 @@ using namespace std::string_view_literals;
 
 constexpr int32_t DEFAULT_FRAME_GAP = 4;
 
-constexpr int32_t HEIGHT_ABOVE_ROAD = 100;
+// Inside-view camera height above the car body, in render-space world units.
+// The original 100 sat the eye very close to the road; combined with
+// the road being a single-sided surface, suspension dives and bump tilts could
+// pop the eye through the tarmac and the road would vanish (back-face culled).
+// 180 keeps the view feeling first-person while leaving headroom for normal
+// suspension travel.
+constexpr int32_t HEIGHT_ABOVE_ROAD = 180;
+
+// Hard floor: the eye is never allowed closer than this many world units to the
+// road surface beneath the car. Belt-and-braces against the see-through-track
+// artefact even if HEIGHT_ABOVE_ROAD is reduced or a future change lets the
+// car body sink further than LimitViewpointY currently permits.
+constexpr int32_t MIN_EYE_ABOVE_ROAD = 60;
 
 GameState g_gameState;
 TrackState g_trackState;
@@ -34,38 +48,113 @@ std::vector<SWTexture> g_roadTexture;
 
 SoftwareRenderer g_renderer;
 
-uint32_t lastInput = 0;
+static uint32_t lastInput = 0;
 static bool ctrlHeld = false;
 
-int32_t frameGap = DEFAULT_FRAME_GAP;
+static int32_t frameGap = DEFAULT_FRAME_GAP;
 static bool bFrameMoved = false;
 
-bool bShowStats = false;
-bool bPaused = false;
-bool bPlayerPaused = false;
-bool bOpponentPaused = false;
-bool bOutsideView = false;
-double gameStartTime, gameEndTime;
+static bool bShowStats = false;
+static bool bPaused = false;
+static bool bPlayerPaused = false;
+static bool bOpponentPaused = false;
+static bool bOutsideView = false;
+static double gameStartTime, gameEndTime;
 
-double g_fpsTime = 0.0;
-int g_fpsFrameCount = 0;
-float g_fps = 0.0f;
+static double g_fpsTime = 0.0;
+static int g_fpsFrameCount = 0;
+static double g_fps = 0.0f;
 
-static int32_t player1_x = 0, player1_y = 0, player1_z = 0;
-static int32_t player1_x_angle = 0;
-int32_t player1_y_angle = 0;
-static int32_t player1_z_angle = 0;
+// game.cpp's local mirror of the player car's pose. Position is in render-space
+// world units; angles are in MAX_ANGLE units (Amiga convention).
+static double player1_x = 0.0, player1_y = 0.0, player1_z = 0.0;
+static double player1_x_angle = 0.0;
+static double player1_y_angle = 0.0;
+static double player1_z_angle = 0.0;
 
-static int32_t opponent_x = 0, opponent_y = 0, opponent_z = 0;
-static float opponent_x_angle = 0.0f, opponent_y_angle = 0.0f, opponent_z_angle = 0.0f;
+// game.cpp's local mirror of the opponent's pose. Position is in render-space
+// world units; angles are in MAX_ANGLE units (Amiga convention) inherited
+// directly from OpponentPose.
+static double opponent_x = 0, opponent_y = 0, opponent_z = 0;
+static double opponent_x_angle = 0.0f, opponent_y_angle = 0.0f, opponent_z_angle = 0.0f;
 
-static int32_t viewpoint1_x, viewpoint1_y, viewpoint1_z;
-static int32_t viewpoint1_x_angle, viewpoint1_y_angle, viewpoint1_z_angle;
-static int32_t target_x, target_y, target_z;
+// Viewpoint position, in render-space world units. The viewpoint calculators
+// below produce render-space coordinates directly so the renderer (matView,
+// vEyePt, DrawBackdrop) can consume them without any further scale conversion.
+static double viewpoint1_x, viewpoint1_y, viewpoint1_z;
+// Viewpoint orientation, in double radians. Set by the per-frame viewpoint
+// calculators and consumed directly by the renderer (Mat4RotationX/Y/Z and
+// DrawBackdrop), so no further unit conversion is required.
+static double viewpoint1_x_angle = 0.0f,
+              viewpoint1_y_angle = 0.0f,
+              viewpoint1_z_angle = 0.0f;
+// Camera lookat target, also in render-space world units (matches viewpoint1_*).
+static double target_x, target_y, target_z;
+
+// Render-only smoothed pitch/roll for the car body and trailing camera.
+// Driven toward the road-surface plane (derived from the three wheel
+// road-height samples) when the car is grounded, or toward the car's physics
+// angles when airborne. Keeps the visible orientation flush with the track
+// even though the underlying spring-damper physics angles can lag.
+static double render_x_angle = 0;
+static double render_z_angle = 0;
+
+// Compute the angle (in MAX_ANGLE units) whose sine equals s. Used to convert
+// a road-plane slope into an Amiga-style angle.
+static double AngleFromSin(double s)
+{
+	if (s > 1.0) s = 1.0;
+	else if (s < -1.0) s = -1.0;
+	const double rads = std::asin(s);
+	return rads * MAX_ANGLE / (2.0 * PI);
+}
+
+// Wrap an angle delta into the range [-MAX_ANGLE/2, +MAX_ANGLE/2] so that
+// shortest-path lerping works across the 0/MAX_ANGLE seam.
+static double WrapAngleSigned(double a)
+{
+	a = WrapAngle(a);
+	if (a >= MAX_ANGLE / 2) a -= MAX_ANGLE;
+	return a;
+}
+
+// Update render_x_angle / render_z_angle. When grounded, target = road plane
+// derived from the three wheel road-height samples (inverting the math in
+// CalculateActualWheelHeights). When airborne, target = physics angles.
+static void UpdateRenderAngles()
+{
+	double target_x_angle = player1_x_angle;
+	double target_z_angle = player1_z_angle;
+
+	const bool grounded = g_gameState.touching_road &&
+		g_gameState.front_left_road_height < GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.front_right_road_height < GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.rear_road_height < GameState::OFF_ROAD_HEIGHT;
+
+	if (grounded)
+	{
+		// Inverting CalculateActualWheelHeights():
+		//   front_avg_road - rear_road = sin_x * 4096   (road_height units)
+		//   front_left_road - front_right_road = sin_z * 2048
+		const double front_avg_road =
+			(g_gameState.front_left_road_height + g_gameState.front_right_road_height) / 2;
+		const double pitch_sin = (front_avg_road - g_gameState.rear_road_height) / 4096.0;
+		const double roll_sin =
+			(g_gameState.front_left_road_height - g_gameState.front_right_road_height) / 2048.0;
+		target_x_angle = WrapAngle(AngleFromSin(pitch_sin));
+		target_z_angle = WrapAngle(AngleFromSin(roll_sin));
+	}
+
+	// Shortest-path lerp toward target with a moderate time constant.
+	constexpr double kSmoothingFactor = 0.25; // 1/4 step per frame; ~4 frames to settle
+	const double dx = WrapAngleSigned(target_x_angle - render_x_angle);
+	const double dz = WrapAngleSigned(target_z_angle - render_z_angle);
+	render_x_angle = WrapAngle(render_x_angle + dx * kSmoothingFactor);
+	render_z_angle = WrapAngle(render_z_angle + dz * kSmoothingFactor);
+}
 
 void InitialiseData(TrackState& t)
 {
-	CreateSinCosTable();
 	ConvertAmigaTrack(t, LITTLE_RAMP);
 	srand(static_cast<unsigned>(std::time(nullptr)));
 }
@@ -163,7 +252,7 @@ void CreateResources()
 	}
 
 	// Set projection transform
-	const float fAspect = static_cast<float>(g_renderer.GetWidth()) / static_cast<float>(g_renderer.GetHeight());
+	const double fAspect = static_cast<double>(g_renderer.GetWidth()) / static_cast<double>(g_renderer.GetHeight());
 	const Mat4 matProj = Mat4PerspectiveFovLH(SCR_PI / 4.0f, fAspect, 0.5f, FURTHEST_Z);
 	g_renderer.SetProjectionMatrix(matProj);
 }
@@ -179,24 +268,27 @@ void FreeResources()
 
 static void CalcTrackMenuViewpoint()
 {
-	static int32_t circle_y_angle = 0;
+	static double circle_y_angle = 0.0;
 
-	constexpr int32_t centre = NUM_TRACK_CUBES * CUBE_SIZE / 2;
-	constexpr int32_t radius = (NUM_TRACK_CUBES - 2) * CUBE_SIZE / PRECISION;
+	// Centre and orbit radius in render-space world units.
+	constexpr double centre_r = NUM_TRACK_CUBES * WORLD_CUBE_SIZE / 2.0;
+	constexpr double radius_r = (NUM_TRACK_CUBES - 2) * WORLD_CUBE_SIZE;
 
-	target_x = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	target_x = centre_r;
 	target_y = 0;
-	target_z = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	target_z = centre_r;
 
 	// Orbit camera around the track
 	if (!bPaused) circle_y_angle += 128;
-	circle_y_angle &= MAX_ANGLE - 1;
+	circle_y_angle = WrapAngle(circle_y_angle);
 
-	auto [sin, cos] = GetSinCos(circle_y_angle);
+	const double circle_rad = circle_y_angle * ANGLE_TO_RADIANS;
+	const double sin = std::sin(circle_rad);
+	const double cos = std::cos(circle_rad);
 
-	viewpoint1_x = centre + sin * radius;
-	viewpoint1_y = -CUBE_SIZE * 3;
-	viewpoint1_z = centre + cos * radius;
+	viewpoint1_x = centre_r + sin * radius_r;
+	viewpoint1_y = -3.0 * WORLD_CUBE_SIZE;
+	viewpoint1_z = centre_r + cos * radius_r;
 
 	const auto trackMenuView = LockViewpointToTarget(viewpoint1_x,
 	                                                 viewpoint1_y,
@@ -206,25 +298,26 @@ static void CalcTrackMenuViewpoint()
 	                                                 target_z);
 	viewpoint1_x_angle = trackMenuView.x_angle;
 	viewpoint1_y_angle = trackMenuView.y_angle;
-	viewpoint1_z_angle = 0;
+	viewpoint1_z_angle = 0.0f;
 }
 
 static void CalcTrackPreviewViewpoint(const TrackState& t)
 {
+	// opponent_x/y/z are render-space already.
 	target_x = opponent_x;
 	target_y = opponent_y;
 	target_z = opponent_z;
 
-	constexpr int32_t centre = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	constexpr double centre_r = NUM_TRACK_CUBES * WORLD_CUBE_SIZE / 2.0;
 
-	viewpoint1_x = centre;
+	viewpoint1_x = centre_r;
 
 	if (t.TrackID == DRAW_BRIDGE)
-		viewpoint1_y = opponent_y - CUBE_SIZE * 5 / 2;
+		viewpoint1_y = target_y - WORLD_CUBE_SIZE * 5.0 / 2.0;
 	else
-		viewpoint1_y = opponent_y - CUBE_SIZE / 2;
+		viewpoint1_y = target_y - WORLD_CUBE_SIZE / 2.0;
 
-	viewpoint1_z = centre;
+	viewpoint1_z = centre_r;
 
 	viewpoint1_x += (target_x - viewpoint1_x) / 2;
 	viewpoint1_z += (target_z - viewpoint1_z) / 2;
@@ -237,35 +330,68 @@ static void CalcTrackPreviewViewpoint(const TrackState& t)
 	                                               target_z);
 	viewpoint1_x_angle = previewView.x_angle;
 	viewpoint1_y_angle = previewView.y_angle;
-	viewpoint1_z_angle = 0;
+	viewpoint1_z_angle = 0.0f;
 }
 
 static void CalcGameViewpoint()
 {
 	if (bOutsideView)
 	{
-		const auto rot = CalcYXZTrigCoefficients(player1_x_angle,
+		// Trailing camera: keep the camera level (no pitch / roll) so the
+		// horizon stays flat regardless of how the car is tilted. Only yaw
+		// follows the car. The car body itself is rendered with road-aligned
+		// pitch/roll via SetCarWorldTransform so it still sits flush with
+		// the track.
+		const auto rot = CalcYXZTrigCoefficients(0,
 		                                         player1_y_angle,
-		                                         player1_z_angle);
+		                                         0);
 
-		const auto offset = WorldOffset(rot, 0, 0xc0, 0x300);
+		const auto offset = WorldOffset(rot, 0.0, 0xc0, 0x300);
+		// player1_x/y/z and offset are both render-space; subtract directly.
 		viewpoint1_x = player1_x - offset.x;
 		viewpoint1_y = player1_y - offset.y;
 		viewpoint1_z = player1_z - offset.z;
 
-		viewpoint1_x_angle = player1_x_angle;
-		viewpoint1_y_angle = player1_y_angle;
-		viewpoint1_z_angle = player1_z_angle;
+		viewpoint1_x_angle = 0.0f;
+		viewpoint1_y_angle = AngleToRadians(player1_y_angle);
+		viewpoint1_z_angle = 0.0f;
 	}
 	else
 	{
 		viewpoint1_x = player1_x;
-		viewpoint1_y = player1_y - (HEIGHT_ABOVE_ROAD << LOG_PRECISION);
+		viewpoint1_y = player1_y - static_cast<double>(HEIGHT_ABOVE_ROAD);
 		viewpoint1_z = player1_z;
 
-		viewpoint1_x_angle = player1_x_angle;
-		viewpoint1_y_angle = player1_y_angle;
-		viewpoint1_z_angle = player1_z_angle;
+		// Clamp the eye so it can't sink below the road surface near the car.
+		// Road heights live in "internal" Amiga units; the conversion to external
+		// player_y coords (where MORE NEGATIVE == HIGHER in world) is
+		//   external_y = -road_height * 256 * LOCAL_Y_FACTOR  ==  -road_height << 10
+		// (matching the reverse calc in LimitViewpointY). Bigger road_height ==
+		// higher road surface, so to keep the eye above ALL nearby road we clamp
+		// against the MAXIMUM of the three wheel road-height samples (front-left,
+		// front-right, rear). Using min() instead would only protect against the
+		// lower side of a banked turn / the lower end on a hill crest, leaving
+		// the eye free to dive through the higher side.
+		// Skip the clamp when every sample is the off-road sentinel (car is in
+		// the void), otherwise it would shove the eye absurdly high.
+		const double fl = g_gameState.front_left_road_height;
+		const double fr = g_gameState.front_right_road_height;
+		const double rr = g_gameState.rear_road_height;
+		const double road_height = std::max({fl, fr, rr});
+		if (road_height < GameState::OFF_ROAD_HEIGHT)
+		{
+			// road_height is in road_height units (256-per-render-Y). The matching
+			// render-space external y is -road_height / 16.
+			const double road_external_y_render = -road_height / 16.0;
+			const double max_viewpoint_y = road_external_y_render -
+				static_cast<double>(MIN_EYE_ABOVE_ROAD);
+			if (viewpoint1_y > max_viewpoint_y)
+				viewpoint1_y = max_viewpoint_y;
+		}
+
+		viewpoint1_x_angle = AngleToRadians(player1_x_angle);
+		viewpoint1_y_angle = AngleToRadians(player1_y_angle);
+		viewpoint1_z_angle = AngleToRadians(player1_z_angle);
 	}
 }
 
@@ -273,19 +399,22 @@ static Mat4 matWorldTrack, matWorldCar, matWorldOpponentsCar;
 
 static void SetCarWorldTransform()
 {
+	// Use render angles (road-aligned when grounded) so the car visibly sits
+	// flush with the track in outside view. Yaw still comes from physics.
 	Mat4 matRot = Mat4::Identity();
-	const float xa = static_cast<float>(player1_x_angle) * 2 * SCR_PI / 65536.0f;
-	const float ya = static_cast<float>(player1_y_angle) * 2 * SCR_PI / 65536.0f;
-	const float za = static_cast<float>(player1_z_angle) * 2 * SCR_PI / 65536.0f;
+	const double xa = AngleToRadians(render_x_angle);
+	const double ya = AngleToRadians(player1_y_angle);
+	const double za = AngleToRadians(render_z_angle);
 	Mat4 matTemp = Mat4RotationZ(za);
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationX(xa);
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationY(ya);
 	matRot = Mat4Multiply(matRot, matTemp);
-	const Mat4 matTrans = Mat4Translation(static_cast<float>(player1_x >> LOG_PRECISION),
-	                                      static_cast<float>(-player1_y >> LOG_PRECISION) + VCAR_HEIGHT * 3 / 8,
-	                                      static_cast<float>(player1_z >> LOG_PRECISION));
+	// player1_x/y/z are render-space units already.
+	const Mat4 matTrans = Mat4Translation(player1_x,
+	                                      -player1_y + VCAR_HEIGHT * 3 / 8,
+	                                      player1_z);
 	matWorldCar = Mat4Multiply(matRot, matTrans);
 }
 
@@ -298,9 +427,10 @@ static void SetOpponentsCarWorldTransform()
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationY(opponent_y_angle);
 	matRot = Mat4Multiply(matRot, matTemp);
-	const Mat4 matTrans = Mat4Translation(static_cast<float>(opponent_x >> LOG_PRECISION),
-	                                      static_cast<float>(-opponent_y >> LOG_PRECISION) + VCAR_HEIGHT / 4,
-	                                      static_cast<float>(opponent_z >> LOG_PRECISION));
+	// opponent_x/y/z are render-space units already.
+	const Mat4 matTrans = Mat4Translation(opponent_x,
+	                                      -opponent_y + VCAR_HEIGHT / 4,
+	                                      opponent_z);
 	matWorldOpponentsCar = Mat4Multiply(matRot, matTrans);
 }
 
@@ -401,6 +531,10 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 		}
 
 		player1_y = LimitViewpointY(g_trackState, g_gameState, player1_y);
+
+		// Smooth render-only orientation toward the road plane so the trailing
+		// camera and visible car body sit flush with the track surface.
+		UpdateRenderAngles();
 	}
 
 	if (g_gameMode == TRACK_MENU || g_gameMode == TRACK_PREVIEW)
@@ -413,32 +547,25 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 			SetOpponentsCarWorldTransform();
 		}
 
-		// Prepare transforms for rendering
-		viewpoint1_x >>= LOG_PRECISION;
-		viewpoint1_z >>= LOG_PRECISION;
-
-		target_x >>= LOG_PRECISION;
+		// viewpoint1_* and target_* are already in render-space world units;
+		// the only post-processing the renderer needs is the y-axis flip
+		// matching the LookAt convention (positive y == up on screen, while
+		// our world stores higher altitudes as more-negative y).
 		target_y = -target_y;
-		target_y >>= LOG_PRECISION;
-		target_z >>= LOG_PRECISION;
 
 		// Set the track's world transform matrix
 		matWorldTrack = Mat4::Identity();
 
 		// Set the view transform matrix using LookAt
 		const Vec3 vUpVec(0.0f, 1.0f, 0.0f);
-		const Vec3 vEyePt(static_cast<float>(viewpoint1_x), static_cast<float>(-viewpoint1_y >> LOG_PRECISION),
-		                  static_cast<float>(viewpoint1_z));
-		const Vec3 vLookatPt(static_cast<float>(target_x), static_cast<float>(target_y), static_cast<float>(target_z));
+		const Vec3 vEyePt(viewpoint1_x, -viewpoint1_y, viewpoint1_z);
+		const Vec3 vLookatPt(target_x, target_y, target_z);
 		const Mat4 matView = Mat4LookAtLH(vEyePt, vLookatPt, vUpVec);
 		g_renderer.SetViewMatrix(matView);
 	}
 	else if (g_gameMode == GAME_IN_PROGRESS)
 	{
 		CalcGameViewpoint();
-
-		viewpoint1_x >>= LOG_PRECISION;
-		viewpoint1_z >>= LOG_PRECISION;
 
 		matWorldTrack = Mat4::Identity();
 
@@ -449,14 +576,14 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 			SetCarWorldTransform();
 		}
 
-		// Build view matrix manually: translate then rotate
-		const Mat4 matTrans = Mat4Translation(static_cast<float>(-viewpoint1_x),
-		                                      static_cast<float>(viewpoint1_y >> LOG_PRECISION),
-		                                      static_cast<float>(-viewpoint1_z));
+		// Build view matrix manually: translate then rotate.
+		const Mat4 matTrans = Mat4Translation(-viewpoint1_x,
+		                                      viewpoint1_y,
+		                                      -viewpoint1_z);
 		Mat4 matRot = Mat4::Identity();
-		const float xa = static_cast<float>(-viewpoint1_x_angle) * 2 * SCR_PI / 65536.0f;
-		const float ya = static_cast<float>(-viewpoint1_y_angle) * 2 * SCR_PI / 65536.0f;
-		const float za = static_cast<float>(-viewpoint1_z_angle) * 2 * SCR_PI / 65536.0f;
+		const double xa = -viewpoint1_x_angle;
+		const double ya = -viewpoint1_y_angle;
+		const double za = -viewpoint1_z_angle;
 		Mat4 matTemp = Mat4RotationY(ya);
 		matRot = Mat4Multiply(matRot, matTemp);
 		matTemp = Mat4RotationX(xa);
@@ -577,19 +704,13 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 {
 	g_renderer.ClearDepth();
 
-	//g_renderer.SetDepthTestEnabled(false);
-	//g_renderer.SetCullMode(SoftwareRenderer::CULL_NONE);
-
 	// Draw Backdrop
 	DrawBackdrop(g_renderer, viewpoint1_y, viewpoint1_x_angle, viewpoint1_y_angle, viewpoint1_z_angle);
-
-	// Enable lighting for 3D geometry
-	g_renderer.SetLightingEnabled(true);
 
 	// Draw Track
 	g_renderer.SetWorldMatrix(matWorldTrack);
 	DrawTrack(t, GameMode, g_renderer, g_gameState.player_current_piece,
-	          g_gameState.player_current_segment, g_roadTexture, !g_gameState.drop_start_done);
+	          g_gameState.player_current_segment, g_roadTexture);
 
 	switch (GameMode)
 	{
@@ -616,9 +737,6 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 		}
 		break;
 	}
-
-	// Disable lighting for UI / 2D overlays
-	g_renderer.SetLightingEnabled(false);
 
 	if (GameMode == GAME_IN_PROGRESS)
 	{
@@ -891,8 +1009,7 @@ void AppInit()
 			{
 				if (g_gameMode == GAME_IN_PROGRESS)
 				{
-					player1_y_angle += _180_DEGREES;
-					player1_y_angle &= MAX_ANGLE - 1;
+					player1_y_angle = WrapAngle(player1_y_angle + _180_DEGREES);
 					g_gameState.INITIALISE_PLAYER = true;
 				}
 			},
@@ -1056,7 +1173,7 @@ void AppRun()
 		g_fpsFrameCount++;
 		if (fTime - g_fpsTime >= 1.0)
 		{
-			g_fps = static_cast<float>(g_fpsFrameCount) / static_cast<float>(fTime - g_fpsTime);
+			g_fps = static_cast<double>(g_fpsFrameCount) / (fTime - g_fpsTime);
 			g_fpsFrameCount = 0;
 			g_fpsTime = fTime;
 		}
@@ -1072,206 +1189,118 @@ void AppRun()
 
 void AppHandleFrameSize(const int cx, const int cy)
 {
-	constexpr float targetAspect = static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT);
-	int renderW, renderH;
-	if (static_cast<float>(cx) / static_cast<float>(cy) > targetAspect)
-	{
-		renderH = cy;
-		renderW = static_cast<int>(cy * targetAspect);
-	}
+	// Fill the entire client area — never letterbox. Adjust the projection so we
+	// always reveal *more* world than the original 4:3 view, never crop:
+	//   - Wider than 4:3  → keep the reference vertical FOV; horizontal FOV grows.
+	//   - Taller than 4:3 → keep the reference horizontal FOV; vertical FOV grows.
+	const int renderW = std::max(cx, 64);
+	const int renderH = std::max(cy, 64);
+	constexpr double refAspect = static_cast<double>(WINDOW_WIDTH) / static_cast<double>(WINDOW_HEIGHT);
+	constexpr double refFovY = SCR_PI / 4.0;
+
+	const double aspect = std::clamp(static_cast<double>(renderW) / static_cast<double>(renderH), 0.5, 3.0);
+	double fovY;
+	if (aspect >= refAspect)
+		fovY = refFovY;
 	else
-	{
-		renderW = cx;
-		renderH = static_cast<int>(cx / targetAspect);
-	}
-	if (renderW > 0 && renderH > 0)
-	{
-		g_renderer.Resize(renderW, renderH);
-		const float fAspect = static_cast<float>(renderW) / static_cast<float>(renderH);
-		const Mat4 matProj = Mat4PerspectiveFovLH(SCR_PI / 4.0f, fAspect, 0.5f, FURTHEST_Z);
-		g_renderer.SetProjectionMatrix(matProj);
-	}
+		fovY = 2.0 * atan(tan(refFovY * 0.5) * refAspect / aspect);
+
+	g_renderer.Resize(renderW, renderH);
+	g_renderer.SetProjectionMatrix(Mat4PerspectiveFovLH(fovY, aspect, 0.5f, FURTHEST_Z));
 }
 
-static constexpr int32_t SIN_COS_TABLE_SIZE = MAX_ANGLE + MAX_ANGLE / 4; // sine/cosine overlap
-
-static int16_t Sin_Cos[SIN_COS_TABLE_SIZE];
-
-static int32_t LockAngle(int32_t opposite,
-                         int32_t adjacent,
-                         int32_t clockwise);
+static double LockAngleRad(double opposite,
+                           double adjacent,
+                           bool clockwise);
 
 
-void CreateSinCosTable()
+// Calculate rotation coefficients for Y, X, Z rotation order.
+// Uses anti-clockwise rotation convention.
+RotationMatrix CalcYXZTrigCoefficients(const double x_angle,
+                                       const double y_angle,
+                                       const double z_angle)
 {
-	double angle = 0;
-	constexpr double step = static_cast<double>(2) * PI / static_cast<double>(MAX_ANGLE);
-	for (int32_t i = 0; i < SIN_COS_TABLE_SIZE; i++)
-	{
-		double value = sin(angle);
-		value = value * static_cast<double>(PRECISION);
-
-		Sin_Cos[i] = static_cast<int16_t>(value);
-		angle += step;
-	}
-}
-
-
-SinCos GetSinCos(const int32_t angle)
-{
-	return {Sin_Cos[angle], Sin_Cos[angle + MAX_ANGLE / 4]};
-}
-
-
-// Calculate rotation coefficients for Y, X, Z rotation order
-// Uses anti-clockwise rotation convention
-RotationMatrix CalcYXZTrigCoefficients(const int32_t x_angle,
-                                       const int32_t y_angle,
-                                       const int32_t z_angle)
-{
-	const int16_t sin_x = Sin_Cos[x_angle];
-	const int16_t sin_y = Sin_Cos[y_angle];
-	const int16_t sin_z = Sin_Cos[z_angle];
-
-	const int16_t cos_x = Sin_Cos[x_angle + MAX_ANGLE / 4];
-	const int16_t cos_y = Sin_Cos[y_angle + MAX_ANGLE / 4];
-	const int16_t cos_z = Sin_Cos[z_angle + MAX_ANGLE / 4];
+	const double rx = x_angle * ANGLE_TO_RADIANS;
+	const double ry = y_angle * ANGLE_TO_RADIANS;
+	const double rz = z_angle * ANGLE_TO_RADIANS;
+	const double sin_x = std::sin(rx);
+	const double cos_x = std::cos(rx);
+	const double sin_y = std::sin(ry);
+	const double cos_y = std::cos(ry);
+	const double sin_z = std::sin(rz);
+	const double cos_z = std::cos(rz);
 
 	RotationMatrix rot;
 
 	// Rotated x coefficients
-	rot.coeffs[X_X_COMP] = static_cast<int16_t>((cos_y * cos_z + sin_x * sin_y / PRECISION * sin_z) /
-		PRECISION);
-	rot.coeffs[X_Y_COMP] = static_cast<int16_t>(-(cos_x * sin_z) / PRECISION);
-	rot.coeffs[X_Z_COMP] = static_cast<int16_t>((-(sin_y * cos_z) + sin_x * cos_y / PRECISION * sin_z) /
-		PRECISION);
+	rot.coeffs[X_X_COMP] = cos_y * cos_z + sin_x * sin_y * sin_z;
+	rot.coeffs[X_Y_COMP] = -(cos_x * sin_z);
+	rot.coeffs[X_Z_COMP] = -(sin_y * cos_z) + sin_x * cos_y * sin_z;
 
 	// Rotated y coefficients
-	rot.coeffs[Y_X_COMP] = static_cast<int16_t>((cos_y * sin_z - sin_x * sin_y / PRECISION * cos_z) /
-		PRECISION);
-	rot.coeffs[Y_Y_COMP] = static_cast<int16_t>(cos_x * cos_z / PRECISION);
-	rot.coeffs[Y_Z_COMP] = static_cast<int16_t>((-(sin_y * sin_z) - sin_x * cos_y / PRECISION * cos_z) /
-		PRECISION);
+	rot.coeffs[Y_X_COMP] = cos_y * sin_z - sin_x * sin_y * cos_z;
+	rot.coeffs[Y_Y_COMP] = cos_x * cos_z;
+	rot.coeffs[Y_Z_COMP] = -(sin_y * sin_z) - sin_x * cos_y * cos_z;
 
 	// Rotated z coefficients
-	rot.coeffs[Z_X_COMP] = static_cast<int16_t>(cos_x * sin_y / PRECISION);
+	rot.coeffs[Z_X_COMP] = cos_x * sin_y;
 	rot.coeffs[Z_Y_COMP] = sin_x;
-	rot.coeffs[Z_Z_COMP] = static_cast<int16_t>(cos_x * cos_y / PRECISION);
+	rot.coeffs[Z_Z_COMP] = cos_x * cos_y;
 
 	return rot;
 }
 
 
-// Transform local-space vector to world-space using rotation coefficients
-COORD_3D WorldOffset(const RotationMatrix& rot,
-                     const int32_t x,
-                     const int32_t y,
-                     const int32_t z)
+// Transform local-space vector to world-space using rotation coefficients.
+// Returns render-space world units (matching the viewpoint pipeline).
+WorldVec3 WorldOffset(const RotationMatrix& rot,
+                      const double x,
+                      const double y,
+                      const double z)
 {
-	COORD_3D result;
+	WorldVec3 result;
 
-	result.x = x * static_cast<int32_t>(rot[X_X_COMP]) +
-		y * static_cast<int32_t>(rot[Y_X_COMP]) +
-		z * static_cast<int32_t>(rot[Z_X_COMP]);
-
-	result.y = x * static_cast<int32_t>(rot[X_Y_COMP]) +
-		y * static_cast<int32_t>(rot[Y_Y_COMP]) +
-		z * static_cast<int32_t>(rot[Z_Y_COMP]);
-
-	result.z = x * static_cast<int32_t>(rot[X_Z_COMP]) +
-		y * static_cast<int32_t>(rot[Y_Z_COMP]) +
-		z * static_cast<int32_t>(rot[Z_Z_COMP]);
+	result.x = x * rot[X_X_COMP] + y * rot[Y_X_COMP] + z * rot[Z_X_COMP];
+	result.y = x * rot[X_Y_COMP] + y * rot[Y_Y_COMP] + z * rot[Z_Y_COMP];
+	result.z = x * rot[X_Z_COMP] + y * rot[Y_Z_COMP] + z * rot[Z_Z_COMP];
 
 	return result;
 }
 
 
-// Calculate x/y angles to point viewpoint toward target
-ViewAngle LockViewpointToTarget(const int32_t viewpoint_x,
-                                const int32_t viewpoint_y,
-                                const int32_t viewpoint_z,
-                                const int32_t target_x,
-                                const int32_t target_y,
-                                const int32_t target_z)
+// Calculate x/y angles to point viewpoint toward target. Returns double radians.
+ViewAngle LockViewpointToTarget(const double viewpoint_x,
+                                const double viewpoint_y,
+                                const double viewpoint_z,
+                                const double tgt_x,
+                                const double tgt_y,
+                                const double tgt_z)
 {
 	ViewAngle result;
 
-	// y angle
-	int32_t opp = target_x - viewpoint_x;
-	int32_t adj = target_z - viewpoint_z;
-	result.y_angle = LockAngle(opp, adj, false);
+	// y angle: yaw between viewpoint and target in the XZ plane.
+	const double dx = tgt_x - viewpoint_x;
+	const double dz = tgt_z - viewpoint_z;
+	result.y_angle = LockAngleRad(dx, dz, false);
 
-	// x angle
-	const double a = (target_x - viewpoint_x) >> LOG_PRECISION;
-	const double b = (target_z - viewpoint_z) >> LOG_PRECISION;
-	const double h = sqrt(a * a + b * b);
-	adj = static_cast<int32_t>(h * PRECISION);
-	opp = target_y - viewpoint_y;
-	result.x_angle = LockAngle(opp, adj, false);
+	// x angle: pitch using horizontal distance as the adjacent. atan2 is
+	// scale-invariant, so we don't need to apply any unit normalisation.
+	const double horiz = sqrt(dx * dx + dz * dz);
+	const double dy = tgt_y - viewpoint_y;
+	result.x_angle = LockAngleRad(dy, horiz, false);
 
 	return result;
 }
 
 
-static int32_t LockAngle(const int32_t opposite,
-                         const int32_t adjacent,
-                         const int32_t clockwise)
+static double LockAngleRad(const double opposite,
+                           const double adjacent,
+                           const bool clockwise)
 {
-	int32_t viewpoint_angle;
-	double radians;
-
-	const double o = opposite;
-	const double a = adjacent;
-
-	// use inverse tan to calculate basic angle in radians
-	if (a == 0) // prevent division by zero
-		radians = PI / static_cast<double>(2); // 90 degrees
-	else
-		radians = atan(o / a); // inverse tan
-
-	// convert radians to internal angle (also round up)
-	const double angle = radians * static_cast<double>(MAX_ANGLE) / (static_cast<double>(2) * PI);
-	// convert to absolute and round up as follows (because abs() isn't for doubles)
-	if (angle > 0)
-		viewpoint_angle = static_cast<int32_t>(angle + 0.5);
-	else
-		viewpoint_angle = static_cast<int32_t>(0.5 - angle);
-
-	// convert angle from first quadrant to full range
-	if (o >= 0)
-	{
-		if (a >= 0)
-		{
-			// first quadrant
-			viewpoint_angle = static_cast<int32_t>(angle);
-		}
-		else
-		{
-			// second quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _180_DEGREES;
-		}
-	}
-	else
-	{
-		if (a <= 0)
-		{
-			// third quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _180_DEGREES;
-		}
-		else
-		{
-			// fourth quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _360_DEGREES;
-		}
-	}
-
-	// default is anti-clockwise, so convert to clockwise if necessary
-	if (clockwise)
-	{
-		viewpoint_angle = -viewpoint_angle & MAX_ANGLE - 1;
-	}
-
-	return viewpoint_angle;
+	// atan2 handles all four quadrants and (0,0) (returns 0).
+	double radians = std::atan2(opposite, adjacent);
+	if (clockwise) radians = -radians;
+	return radians;
 }
 
 
@@ -1290,9 +1319,9 @@ static void StoreCarTriangle(const COORD_3D* c1, const COORD_3D* c2, const COORD
 		return;
 	}
 
-	const Vec3 v1(static_cast<float>(c1->x), static_cast<float>(c1->y), static_cast<float>(c1->z));
-	const Vec3 v2(static_cast<float>(c2->x), static_cast<float>(c2->y), static_cast<float>(c2->z));
-	const Vec3 v3(static_cast<float>(c3->x), static_cast<float>(c3->y), static_cast<float>(c3->z));
+	const Vec3 v1(c1->x, c1->y, c1->z);
+	const Vec3 v2(c2->x, c2->y, c2->z);
+	const Vec3 v3(c3->x, c3->y, c3->z);
 
 	pVertices[numCarVertices].pos = v1;
 	pVertices[numCarVertices].color = colour;
@@ -1433,9 +1462,6 @@ void FreeCarVertexBuffer(void)
 void DrawCar(SoftwareRenderer& r)
 {
 	if (!pCarVertices || numCarVertices < 3) return;
-
-	//r.SetDepthTestEnabled(true);
-	//r.SetCullMode(SoftwareRenderer::CULL_CCW);
 
 	r.DrawTriangleList(pCarVertices, 0, numCarVertices / 3, nullptr);
 }

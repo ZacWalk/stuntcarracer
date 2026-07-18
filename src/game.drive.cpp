@@ -3,10 +3,16 @@
 // NOTE: All statics and globals that have been initialised will need to be
 //       reinitialised when the car is repositioned on the track.
 //
-// Coordinate conventions:
-//   player_x, player_z — PC StuntCarRacer format
-//   player_y            — Amiga StuntCarRacer format
-//   Angles are unsigned; sin/cos/tan need halving.
+// Coordinate conventions (all render-space, double):
+//   game.player_x, game.player_z — horizontal world position (same scale as
+//       CarPose.x/z, the COORD_3D track coords, and WORLD_CUBE_SIZE).
+//   game.player_y               — vertical position with the renderer's
+//       "negative-up" convention (matches CarPose.y, viewpoint1_y, etc.).
+//   Wheel road_height / actual_height values remain in the legacy 256-per-
+//       render-Y "road-height units" — they're sampled directly from the
+//       interpolated track Y (CalculateWorldRoadHeight returns y/256).
+//   Angles are doubles in MAX_ANGLE units; convert with ANGLE_TO_RADIANS
+//       before feeding std::sin / std::cos.
 
 #include "platform.h"
 #include "game.h"
@@ -29,98 +35,99 @@ struct PieceResult
 
 struct RelativeXZ
 {
-	int32_t rx;
-	int32_t rz;
+	double rx;
+	double rz;
 };
 
 struct OffRoadResult
 {
-	int32_t distance;
-	int32_t ex;
-	int32_t ez;
+	double distance;
+	double ex;
+	double ez;
 };
 
 struct SurfaceResult
 {
-	int32_t sx;
-	int32_t sz;
-	int32_t road_x;
+	double sx;
+	double sz;
+	double road_x;
 	int32_t segment;
 };
 
 struct WheelCollisionResult
 {
-	int32_t height_difference;
-	int32_t old_difference;
-	int32_t amount_below_road;
+	double height_difference;
+	double old_difference;
+	double amount_below_road;
 	int32_t damage;
 };
 
 struct InclinationResult
 {
-	int32_t sin;
-	int32_t cos;
+	double sin;
+	double cos;
 };
 
 struct CurveMeasurements
 {
-	int32_t y_angle;
-	int32_t radius;
+	double y_angle;
+	double radius;
 	double distance_from_centre;
 };
 
 static void CarMovement(TrackState& track, GameState& game, const SoundState& sound);
-static PieceResult GetPieceUsingMap(const TrackState& track, int32_t x, int32_t z);
-static RelativeXZ CalcXZRelativeToPiece(const TrackState& track, int32_t x, int32_t z, int32_t piece);
+static PieceResult GetPieceUsingMap(const TrackState& track, double x, double z);
+static RelativeXZ CalcXZRelativeToPiece(const TrackState& track, double x, double z, int32_t piece);
 
 static void CalculateWheelXZOffsets(GameState& player, const RotationMatrix& rot);
 
 static void CalculateRoadWheelHeights(TrackState& track, GameState& player);
-static int32_t CalculateRoadWheelHeight(GameState& player, int32_t height, int32_t prev_height);
-static int32_t CalculateIfCarOffRoad(GameState& player, int32_t height);
-static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, int32_t wheel, int32_t x, int32_t z);
+static double CalculateRoadWheelHeight(GameState& player, double height, double prev_height);
+static double CalculateIfCarOffRoad(GameState& player, double height);
+static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int32_t wheel, double x, double z);
 
 struct SurfaceCoords
 {
-	int32_t x1, y1, z1;
-	int32_t x2, y2, z2;
-	int32_t x3, y3, z3;
-	int32_t x4, y4, z4;
+	double x1, y1, z1;
+	double x2, y2, z2;
+	double x3, y3, z3;
+	double x4, y4, z4;
 };
 
 static SurfaceCoords GetSurfaceCoords(const TrackState& track, int32_t piece, int32_t segment);
-static OffRoadResult CalcDistanceOffRoad(int32_t x, int32_t z,
-                                         int32_t ox, int32_t oz,
-                                         int32_t ux, int32_t uz,
-                                         int32_t vx, int32_t vz);
+static OffRoadResult CalcDistanceOffRoad(double x, double z,
+                                         double ox, double oz,
+                                         double ux, double uz,
+                                         double vx, double vz);
 static SurfaceResult CalcSurfacePosition(const TrackState& track, int32_t piece,
-                                         int32_t x, int32_t z,
-                                         int32_t ox, int32_t oz,
-                                         int32_t ux, int32_t uz,
-                                         int32_t vx, int32_t vz);
+                                         double x, double z,
+                                         double ox, double oz,
+                                         double ux, double uz,
+                                         double vx, double vz);
 
 static void CalculateActualWheelHeights(GameState& player);
 static void CalculateXZSpeeds(GameState& player, const RotationMatrix& rot);
 static void CalculateGravityAcceleration(GameState& player, const RotationMatrix& rot);
 static void CarCollisionDetection(const TrackState& track, GameState& player, const SoundState& sound);
-static WheelCollisionResult CalculateWheelCollision(GameState& player, int32_t road_height,
-                                                    int32_t actual_height,
-                                                    int32_t old_difference,
-                                                    int32_t amount_below_road,
+static WheelCollisionResult CalculateWheelCollision(GameState& player, double road_height,
+                                                    double actual_height,
+                                                    double old_difference,
+                                                    double amount_below_road,
                                                     int32_t damage);
-static void CalculateCarCollisionAcceleration(GameState& player, int32_t average_amount_below_road);
-static InclinationResult CalculateInclinationSinCos(int32_t inclination_in);
+static void CalculateCarCollisionAcceleration(GameState& player, double average_amount_below_road);
+static InclinationResult CalculateInclinationSinCos(double inclination_in);
 static void LiftCarOntoTrack(GameState& player);
+static void EnforceTrackFloor(TrackState& track, GameState& player);
 
 static void CalculateTotalAcceleration(GameState& player);
-static int32_t GetTwiceCollisionYAcceleration(const GameState& player);
+static double GetTwiceCollisionYAcceleration(const GameState& player);
 static void CalculateXAcceleration(GameState& player);
 
 static void CalculateSteering(const TrackState& track, GameState& player);
 static void CalculateSteeringAcceleration(GameState& player, int32_t steering_amount);
 static void AlignCarWithRoad(GameState& player);
 static void AdjustSteeringAcceleration(GameState& player);
-static int32_t IdentifyPiece(const TrackState& track, int32_t x, int32_t z, int32_t piece_hint);
+static int32_t IdentifyPiece(const TrackState& track, double x, double z, int32_t piece_hint);
 static void GetPieceCoords(const TrackState& track, int32_t piece);
 
 static void CalculateWorldAcceleration(GameState& player, const RotationMatrix& rot);
@@ -132,12 +139,12 @@ static void CalculateFinalRotationSpeed(GameState& player);
 static void UpdatePlayersWorldSpeed(GameState& player);
 static void UpdatePlayersPosition(GameState& player);
 
-static int32_t CalcSectionYAngle(const TrackState& track, int32_t piece,
-                                 int32_t x,
-                                 int32_t z);
+static double CalcSectionYAngle(const TrackState& track, int32_t piece,
+                                double x,
+                                double z);
 static CurveMeasurements CalcCurveMeasurements(const TrackState& track, int32_t piece,
-                                               int32_t x,
-                                               int32_t z);
+                                               double x,
+                                               double z);
 
 static void PositionCarAbovePiece(TrackState& track, GameState& player, int32_t piece);
 static void UpdateEngineRevs(const GameState& player);
@@ -265,41 +272,39 @@ void ResetPlayer(GameState& player)
 
 CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound,
                      const uint32_t input,
-                     const int32_t x,
-                     const int32_t y,
-                     const int32_t z,
-                     const int32_t x_angle,
-                     const int32_t y_angle,
-                     const int32_t z_angle)
+                     const double x,
+                     const double y,
+                     const double z,
+                     const double x_angle,
+                     const double y_angle,
+                     const double z_angle)
 {
+	// CarPose and game.player_x/y/z all live in render-space world units now.
+	// No boundary unit conversion is needed.
+
 	// temporarily set game values to values provided when required
 	if (game.INITIALISE_PLAYER)
 	{
 		game.INITIALISE_PLAYER = false;
 
-		if (!game.Replay)
-		{
-			game.player_x = x;
-			game.player_y = -(y / GameState::LOCAL_Y_FACTOR);
-			game.player_z = z;
-			game.player_x_angle = x_angle;
-			game.player_y_angle = y_angle;
-			game.player_z_angle = z_angle;
-		}
+		game.player_x = x;
+		game.player_y = y;
+		game.player_z = z;
+		game.player_x_angle = x_angle;
+		game.player_y_angle = y_angle;
+		game.player_z_angle = z_angle;
 	}
 
-	// reset game and control action replay as required
+	// reset game on new race or after the car has fallen off the map
 	if (game.off_track_count > GameState::OFF_TRACK_LIMIT ||
-		game.bNewGame ||
-		game.ReplayRequested)
+		game.bNewGame)
 	{
 		ResetPlayer(game);
 
-		if (game.bNewGame || game.ReplayRequested)
+		if (game.bNewGame)
 		{
 			// reset all animated objects
 			ResetDrawBridge(track, game);
-			game.ReplayFinished = false;
 		}
 
 		const int32_t restart_piece = game.off_track_count > GameState::OFF_TRACK_LIMIT
@@ -308,7 +313,7 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 		PositionCarAbovePiece(track, game, restart_piece);
 		game.drop_start_done = false;
 		game.on_chains = true;
-		game.chain_height_remaining = 0xc00 * 256 / GameState::LOCAL_Y_FACTOR;
+		game.chain_height_remaining = 48.0; // render-space Y units (was 0xc00*256/LOCAL_Y_FACTOR = 0x30000 internal)
 
 		// Initialize road heights properly to avoid corrupted averaging
 		// (road heights were reset to OFF_ROAD_HEIGHT, which corrupts the
@@ -317,7 +322,7 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 			const auto rot = CalcYXZTrigCoefficients(game.player_x_angle,
 			                                         game.player_y_angle,
 			                                         game.player_z_angle);
-			const int32_t saved_z_speed = game.player_z_speed;
+			const double saved_z_speed = game.player_z_speed;
 			game.player_z_speed = 0xA00; // bypass averaging in CalculateRoadWheelHeight
 			CalculateWheelXZOffsets(game, rot);
 			CalculateRoadWheelHeights(track, game);
@@ -330,7 +335,7 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 	CarControl(game, input);
 
 	// Chain-controlled descent: override Y physics during the lowering phase
-	const int32_t saved_player_y = game.player_y;
+	const double saved_player_y = game.player_y;
 
 	CarMovement(track, game, sound);
 
@@ -342,9 +347,10 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 		game.player_y = saved_player_y;
 		game.player_world_y_speed = 0;
 
-		constexpr int32_t CHAIN_DESCENT_RATE = 4096;
-		const int32_t descent = std::min(game.chain_height_remaining, CHAIN_DESCENT_RATE);
-		game.player_y -= descent;
+		// Render-space Y is negative-up, so descending = INCREASING player_y.
+		constexpr double CHAIN_DESCENT_RATE = 1.0;
+		const double descent = std::min(game.chain_height_remaining, CHAIN_DESCENT_RATE);
+		game.player_y += descent;
 		game.chain_height_remaining -= descent;
 
 		if (game.chain_height_remaining <= 0)
@@ -360,27 +366,31 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 
 	CarPose result;
 
-	// output game values for use by functions that draw the world
+	// All of game.player_x/y/z are already in render-space.
 	result.x = game.player_x;
-	result.y = -(game.player_y * GameState::LOCAL_Y_FACTOR);
+	result.y = game.player_y;
 	result.z = game.player_z;
 
 	// Reverse x and z angle because StuntCarRacer's DrawWorld rotates around x and z in
 	// the opposite direction to the trig. coefficients calculated by StuntCarRacer's
 	// CarBehaviour (i.e. clockwise becomes anti-clockwise or vice-versa)
-	result.x_angle = -game.player_x_angle & MAX_ANGLE - 1;
-	result.y_angle = game.player_y_angle & MAX_ANGLE - 1;
-	result.z_angle = -game.player_z_angle & MAX_ANGLE - 1;
+	result.x_angle = WrapAngle(-game.player_x_angle);
+	result.y_angle = WrapAngle(game.player_y_angle);
+	result.z_angle = WrapAngle(-game.player_z_angle);
 
 	return result;
 }
 
 static constexpr int32_t Y_ADJUSTMENT_THRESHOLD = 0x480;
 
-int32_t LimitViewpointY(TrackState& track, GameState& player, int32_t y)
+double LimitViewpointY(TrackState& track, GameState& player, double y)
 {
-	const int32_t saved_player_z_speed = player.player_z_speed;
-	int32_t ry = 0, ly = 0;
+	// y is in render-space world units (matches CarPose.y). Internally we
+	// resample the wheel positions and, if a front wheel is clipping deep
+	// into the road surface, return the render-space y that would put it
+	// back at the road plane minus the threshold tolerance.
+	const double saved_player_z_speed = player.player_z_speed;
+	double ry = 0.0, ly = 0.0;
 
 	// calculate required sin.cos values using player x, y and z angles
 	const auto rot = CalcYXZTrigCoefficients(player.player_x_angle,
@@ -395,31 +405,33 @@ int32_t LimitViewpointY(TrackState& track, GameState& player, int32_t y)
 
 	player.player_z_speed = saved_player_z_speed; // restore original value
 
-	auto [sin_x, cos_x] = GetSinCos(player.player_x_angle); // cosine not used
-	auto [sin_z, cos_z] = GetSinCos(player.player_z_angle); // cosine not used
+	const double sin_x = std::sin(player.player_x_angle * ANGLE_TO_RADIANS);
+	const double sin_z = std::sin(player.player_z_angle * ANGLE_TO_RADIANS);
 
+	// Inverse of CalculateActualWheelHeights' formula, expressed directly in
+	// render-space y. The road_height → player_y conversion is /-16 (matching
+	// the *-16 forward direction); the sin-offset coefficients are the
+	// CalculateActualWheelHeights coefficients divided by -16:
+	//   pitch (sin_x * 2048) / -16 → -128
+	//   roll  (sin_z * 1024) / -16 → -64
 	if (player.front_right_road_height - player.front_right_actual_height > Y_ADJUSTMENT_THRESHOLD)
 	{
-		// Reverse the CalculateActualWheelHeights() calculation to find adjusted player_y from road height
-		ry = (player.front_right_road_height - Y_ADJUSTMENT_THRESHOLD) << 8;
-		ry += static_cast<int32_t>(sin_z) << (3 + 15 - LOG_PRECISION);
-		ry -= static_cast<int32_t>(sin_x) << (4 + 15 - LOG_PRECISION);
+		const double road_target = player.front_right_road_height - Y_ADJUSTMENT_THRESHOLD;
+		ry = -road_target / 16.0 + sin_x * 128.0 - sin_z * 64.0;
 	}
 
 	if (player.front_left_road_height - player.front_left_actual_height > Y_ADJUSTMENT_THRESHOLD)
 	{
-		// Reverse the CalculateActualWheelHeights() calculation to find adjusted player_y from road height
-		ly = (player.front_left_road_height - Y_ADJUSTMENT_THRESHOLD) << 8;
-		ly -= static_cast<int32_t>(sin_z) << (3 + 15 - LOG_PRECISION);
-		ly -= static_cast<int32_t>(sin_x) << (4 + 15 - LOG_PRECISION);
+		const double road_target = player.front_left_road_height - Y_ADJUSTMENT_THRESHOLD;
+		ly = -road_target / 16.0 + sin_x * 128.0 + sin_z * 64.0;
 	}
 
 	if (ry && ly)
-		y = -((ry + ly) * GameState::LOCAL_Y_FACTOR / 2); // average of two values
+		y = (ry + ly) / 2.0; // average of two render-space y candidates
 	else if (ry)
-		y = -(ry * GameState::LOCAL_Y_FACTOR);
+		y = ry;
 	else if (ly)
-		y = -(ly * GameState::LOCAL_Y_FACTOR);
+		y = ly;
 
 	return y;
 }
@@ -534,6 +546,16 @@ static void CarMovement(TrackState& track, GameState& game, const SoundState& so
 	UpdatePlayersWorldSpeed(game);
 	UpdatePlayersPosition(game);
 
+	// Hard post-integration floor: the spring-damper LiftCarOntoTrack runs
+	// inside CarCollisionDetection using height differences sampled BEFORE
+	// the velocity integration. When the car moves rapidly into a rising
+	// surface (e.g. driving into the base of a ramp, or landing on one),
+	// the integrated XZ position can sample a much higher road than the
+	// start-of-frame check ever saw, leaving the car visibly underneath the
+	// track. Re-sample at the new position and clamp so the wheels can
+	// never end up below the road surface.
+	EnforceTrackFloor(track, game);
+
 	// Set off-map flags when car is too far off road
 	if (game.player_distance_off_road >= 256 - GameState::ROAD_WIDTH / 2)
 	{
@@ -546,18 +568,21 @@ static void CarMovement(TrackState& track, GameState& game, const SoundState& so
 		game.smaller_limit_required = false;
 	}
 
-	if (game.off_map_status != 0 && game.touching_road && game.player_y < 0x1000000)
+	// Off-map climb check: player_y is render-space negative-up, so values
+	// MORE NEGATIVE than -4096 indicate the car has flown abnormally high
+	// (was `player_y_internal >= 0x1000000` in the original physics units).
+	if (game.off_map_status != 0 && game.touching_road && game.player_y > -4096.0)
 	{
 		game.off_track_count++;
 		game.smaller_limit_required = true;
 	}
 }
 
-static PieceResult GetPieceUsingMap(const TrackState& track, const int32_t x, const int32_t z)
+static PieceResult GetPieceUsingMap(const TrackState& track, const double x, const double z)
 {
 	// locate the map square that the point is in
-	const int32_t map_x = x >> LOG_CUBE_SIZE;
-	const int32_t map_z = z >> LOG_CUBE_SIZE;
+	const int32_t map_x = static_cast<int32_t>(std::floor(x / WORLD_CUBE_SIZE));
+	const int32_t map_z = static_cast<int32_t>(std::floor(z / WORLD_CUBE_SIZE));
 
 	if (map_x < 0 || map_x >= NUM_TRACK_CUBES ||
 		map_z < 0 || map_z >= NUM_TRACK_CUBES)
@@ -577,33 +602,34 @@ static PieceResult GetPieceUsingMap(const TrackState& track, const int32_t x, co
 	return {true, piece};
 }
 
-static RelativeXZ CalcXZRelativeToPiece(const TrackState& track, const int32_t x, const int32_t z, const int32_t piece)
+static RelativeXZ CalcXZRelativeToPiece(const TrackState& track, const double x, const double z, const int32_t piece)
 {
 	// calculate x/z position of piece's front left corner, within world
-	const int32_t piece_x = track.Track[piece].x << LOG_CUBE_SIZE;
-	const int32_t piece_z = track.Track[piece].z << LOG_CUBE_SIZE;
+	// (in render-space, matching the COORD_3D track coords and player_x/z).
+	const double piece_x = track.Track[piece].x * WORLD_CUBE_SIZE;
+	const double piece_z = track.Track[piece].z * WORLD_CUBE_SIZE;
 
 	// calculate point's x/z position relative to the piece (and in same range)
-	return {(x - piece_x) >> LOG_PRECISION, (z - piece_z) >> LOG_PRECISION};
+	return {x - piece_x, z - piece_z};
 }
 
 static void CalculateWheelXZOffsets(GameState& player, const RotationMatrix& rot)
 {
-	// rear wheel is just (0, 0, -CAR_LENGTH/2) split into components
-	player.rear_wheel_x_offset = static_cast<int32_t>(rot[Z_X_COMP]) * (-CAR_LENGTH / 2) * PC_FACTOR;
-	player.rear_wheel_z_offset = static_cast<int32_t>(rot[Z_Z_COMP]) * (-CAR_LENGTH / 2) * PC_FACTOR;
+	// rear wheel is just (0, 0, -CAR_LENGTH/2) split into components.
+	// Wheel offsets are in render-space units, matching player_x/z.
+	constexpr double half_length = (-CAR_LENGTH / 2.0) * PC_FACTOR;
+	player.rear_wheel_x_offset = rot[Z_X_COMP] * half_length;
+	player.rear_wheel_z_offset = rot[Z_Z_COMP] * half_length;
 
 	// front left wheel is just (-CAR_WIDTH/2, 0, CAR_LENGTH/2) split into components
-	player.front_left_wheel_x_offset = static_cast<int32_t>(rot[X_X_COMP]) * (-CAR_WIDTH / 2) * PC_FACTOR;
-	player.front_left_wheel_x_offset += static_cast<int32_t>(rot[Z_X_COMP]) * (CAR_LENGTH / 2) * PC_FACTOR;
-	player.front_left_wheel_z_offset = static_cast<int32_t>(rot[X_Z_COMP]) * (-CAR_WIDTH / 2) * PC_FACTOR;
-	player.front_left_wheel_z_offset += static_cast<int32_t>(rot[Z_Z_COMP]) * (CAR_LENGTH / 2) * PC_FACTOR;
+	constexpr double half_width = (CAR_WIDTH / 2.0) * PC_FACTOR;
+	constexpr double front_z = (CAR_LENGTH / 2.0) * PC_FACTOR;
+	player.front_left_wheel_x_offset = rot[X_X_COMP] * -half_width + rot[Z_X_COMP] * front_z;
+	player.front_left_wheel_z_offset = rot[X_Z_COMP] * -half_width + rot[Z_Z_COMP] * front_z;
 
 	// front right wheel is just (CAR_WIDTH/2, 0, CAR_LENGTH/2) split into components
-	player.front_right_wheel_x_offset = static_cast<int32_t>(rot[X_X_COMP]) * (CAR_WIDTH / 2) * PC_FACTOR;
-	player.front_right_wheel_x_offset += static_cast<int32_t>(rot[Z_X_COMP]) * (CAR_LENGTH / 2) * PC_FACTOR;
-	player.front_right_wheel_z_offset = static_cast<int32_t>(rot[X_Z_COMP]) * (CAR_WIDTH / 2) * PC_FACTOR;
-	player.front_right_wheel_z_offset += static_cast<int32_t>(rot[Z_Z_COMP]) * (CAR_LENGTH / 2) * PC_FACTOR;
+	player.front_right_wheel_x_offset = rot[X_X_COMP] * half_width + rot[Z_X_COMP] * front_z;
+	player.front_right_wheel_z_offset = rot[X_Z_COMP] * half_width + rot[Z_Z_COMP] * front_z;
 }
 
 using WheelPositionType = enum
@@ -641,10 +667,7 @@ static void CalculateRoadWheelHeights(TrackState& track, GameState& player)
 	// calculate world road height at wheel positions
 	for (int32_t i = 0; i < NUM_WHEEL_POSITIONS; i++)
 	{
-		int32_t height = CalculateWorldRoadHeight(track, player, i, wheel_pos[i].x, wheel_pos[i].z);
-
-		// convert the result to PC StuntCarRacer magnitude
-		height = (height / PC_FACTOR) >> (LOG_PRECISION - 3);
+		const double height = CalculateWorldRoadHeight(track, player, i, wheel_pos[i].x, wheel_pos[i].z);
 
 		wheel_pos[i].y = CalculateRoadWheelHeight(player, height, wheel_pos[i].y);
 
@@ -658,32 +681,38 @@ static void CalculateRoadWheelHeights(TrackState& track, GameState& player)
 	player.rear_road_height = wheel_pos[REAR].y;
 }
 
-static int32_t CalculateRoadWheelHeight(GameState& player, int32_t height, const int32_t prev_height)
+static double CalculateRoadWheelHeight(GameState& player, double height, const double prev_height)
 {
 	if (player.wheel_off_road)
 		height = CalculateIfCarOffRoad(player, height);
 
 	player.wheel_off_road = false;
 
-	// get angle in Amiga StuntCarRacer format (i.e. correct sign)
-	const int32_t angle = player.player_x_angle < _180_DEGREES
-		                      ? player.player_x_angle
-		                      : player.player_x_angle - _360_DEGREES;
-
-	if (abs(player.player_z_speed) >= 0xA00 || abs(angle) >= 0x600)
-	{
-		// use height as is
+	// Smoothing the road sample with the previous frame's value adds a
+	// 1-frame lag, which lets the car visibly clip into rising surfaces
+	// (the base of a ramp, jump landings) before the spring sees the new
+	// height. The spring-damper itself already provides plenty of damping,
+	// so use the raw sample once we're past the chain-drop intro - that's
+	// the only phase that genuinely needs the average to settle without
+	// the spring overshooting.
+	if (player.drop_start_done)
 		return height;
-	}
-	// save the average of calculated (new) height and the previous value
-	// this is possibly for when the car is being lowered onto the road
-	return (height + prev_height) / 2;
+
+	// Bypass averaging on fast forward speed or steep car pitch (matches
+	// the original Amiga StuntCarRacer behaviour during the chain drop).
+	const double angle = player.player_x_angle < _180_DEGREES
+		                     ? player.player_x_angle
+		                     : player.player_x_angle - _360_DEGREES;
+	if (abs(player.player_z_speed) >= 0xA00 || std::abs(angle) >= 0x600)
+		return height;
+
+	return (height + prev_height) / 2.0;
 }
 
-static int32_t CalculateIfCarOffRoad(GameState& player, int32_t height)
+static double CalculateIfCarOffRoad(GameState& player, double height)
 {
 	// calculate how far the current wheel is off the left or right of the road
-	const int32_t x = abs(player.distance_off_road);
+	const double x = abs(player.distance_off_road);
 
 	if (x > 3 * CAR_WIDTH / 4)
 	{
@@ -709,7 +738,7 @@ static int32_t CalculateIfCarOffRoad(GameState& player, int32_t height)
 
 			// logic here is different to Amiga StuntCarRacer, due to distance_off_road being different
 			// from wheel.road.x.position and also plus.180.degrees not being used
-			const int32_t w = player.distance_off_road >> 8;
+			const int32_t w = static_cast<int32_t>(player.distance_off_road / 256.0);
 
 			if (w & 0x80)
 			{
@@ -724,7 +753,7 @@ static int32_t CalculateIfCarOffRoad(GameState& player, int32_t height)
 	return height;
 }
 
-static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, int32_t wheel, int32_t x, int32_t z)
+static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int32_t wheel, double x, double z)
 {
 	// starts with the piece/surface that was used last time
 	// this avoids locating the wrong map square,
@@ -791,7 +820,7 @@ static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, in
 
 	// find the surface that the point is located within
 	// first check point is not before or after surface (z direction)
-	int32_t xs, xp, zs, zp, rx = 0, rz = 0;
+	double xs, xp, zs, zp, rx = 0, rz = 0;
 	int32_t before_surface = true, after_surface = true;
 
 	// 'before surface' loop
@@ -951,8 +980,8 @@ static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, in
 	if (wheel != CENTRE)
 	{
 		auto surf = CalcSurfacePosition(track, piece, rx, rz, sc.x2, sc.z2, sc.x1, sc.z1, sc.x3, sc.z3);
-		sx = surf.sx;
-		sz = surf.sz;
+		sx = static_cast<int32_t>(surf.sx);
+		sz = static_cast<int32_t>(surf.sz);
 		calculated_segment = surf.segment;
 
 		if (wheel == REAR)
@@ -966,8 +995,8 @@ static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, in
 		// Called by CalculatePlayersRoadPosition
 		// Set player_current_piece, player_current_segment, players_distance_into_section and players_road_x_position
 		auto surf = CalcSurfacePosition(track, piece, rx, rz, sc.x2, sc.z2, sc.x1, sc.z1, sc.x3, sc.z3);
-		sx = surf.sx;
-		sz = surf.sz;
+		sx = static_cast<int32_t>(surf.sx);
+		sz = static_cast<int32_t>(surf.sz);
 		calculated_segment = surf.segment;
 
 		player.player_current_piece = piece;
@@ -979,7 +1008,7 @@ static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, in
 			PlatformShowError(L"calculated_segment out of range", L"Error");
 		}
 
-		player.players_road_x_position = surf.road_x;
+		player.players_road_x_position = static_cast<int32_t>(surf.road_x);
 	}
 
 	// If the curve calculation output a different segment to the one identified
@@ -998,13 +1027,16 @@ static int32_t CalculateWorldRoadHeight(TrackState& track, GameState& player, in
 	//			  (sc.x4, sc.y4, sc.z4)
 
 	// first do x interpolation
-	int32_t sya = sc.y1 + ((sx * (sc.y4 - sc.y1)) >> GameState::LOG_SURFACE_SIZE);
-	int32_t syb = sc.y2 + ((sx * (sc.y3 - sc.y2)) >> GameState::LOG_SURFACE_SIZE);
+	double sya = sc.y1 + sx * (sc.y4 - sc.y1) / static_cast<double>(GameState::SURFACE_SIZE);
+	double syb = sc.y2 + sx * (sc.y3 - sc.y2) / static_cast<double>(GameState::SURFACE_SIZE);
 
 	// now do z interpolation
-	int32_t y = (syb << GameState::LOG_SURFACE_SIZE) + sz * (sya - syb);
+	double y = syb * GameState::SURFACE_SIZE + sz * (sya - syb);
 
-	return y << (LOG_PRECISION - GameState::LOG_SURFACE_SIZE);
+	// Compose the per-axis interpolation rescale (16) with the caller-side
+	// rescale (1 / 4096) so the function returns ready-to-use "PC StuntCarRacer
+	// magnitude" heights. Combined factor: 16 / 4096 = 1 / 256.
+	return y / 256.0;
 }
 
 static SurfaceCoords GetSurfaceCoords(const TrackState& track, const int32_t piece, int32_t segment)
@@ -1037,10 +1069,10 @@ static SurfaceCoords GetSurfaceCoords(const TrackState& track, const int32_t pie
 	return sc;
 }
 
-static OffRoadResult CalcDistanceOffRoad(const int32_t x, const int32_t z,
-                                         const int32_t ox, const int32_t oz,
-                                         int32_t ux, int32_t uz,
-                                         int32_t vx, int32_t vz)
+static OffRoadResult CalcDistanceOffRoad(const double x, const double z,
+                                         const double ox, const double oz,
+                                         double ux, double uz,
+                                         double vx, double vz)
 {
 	// ox, oz - origin point
 
@@ -1054,11 +1086,10 @@ static OffRoadResult CalcDistanceOffRoad(const int32_t x, const int32_t z,
 
 	// calculate (perpendicular ?) distance from left or right edge
 	// method is similar to that used when texture mapping
-	int32_t distance;
+	double distance;
 
-	const int32_t v = (x - ox) * uz + (oz - z) * ux; // needs to be divided by denominator
-	const int32_t denominator = uz * vx - ux * vz;
-	// do divide afterwards to avoid need for floating point calculation
+	const double v = (x - ox) * uz + (oz - z) * ux; // needs to be divided by denominator
+	const double denominator = uz * vx - ux * vz;
 	if (denominator == 0)
 		distance = 0; // prevent division by zero
 	else
@@ -1083,10 +1114,10 @@ static OffRoadResult CalcDistanceOffRoad(const int32_t x, const int32_t z,
 }
 
 static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t piece,
-                                         const int32_t x, const int32_t z,
-                                         const int32_t ox, const int32_t oz,
-                                         int32_t ux, int32_t uz,
-                                         int32_t vx, int32_t vz)
+                                         const double x, const double z,
+                                         const double ox, const double oz,
+                                         double ux, double uz,
+                                         double vx, double vz)
 {
 	SurfaceResult result = {};
 
@@ -1100,8 +1131,8 @@ static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t 
 
 		// must be a curve (type will be -'ve)
 		const auto curve = CalcCurveMeasurements(track, piece, x, z);
-		int32_t piece_y_angle = curve.y_angle;
-		const int32_t radius = curve.radius;
+		double piece_y_angle = curve.y_angle;
+		const double radius = curve.radius;
 		const double distance_from_centre = curve.distance_from_centre;
 
 		// adjust for normal direction of travel
@@ -1118,18 +1149,18 @@ static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t 
 		else
 			d = distance_from_centre - static_cast<double>(radius);
 
-		int32_t surface_x = static_cast<int32_t>(d * GameState::SURFACE_SIZE / (GameState::ROAD_WIDTH * PC_FACTOR));
-		result.road_x = static_cast<int32_t>(d / PC_FACTOR);
+		double surface_x = d * GameState::SURFACE_SIZE / (GameState::ROAD_WIDTH * PC_FACTOR);
+		result.road_x = d / PC_FACTOR;
 
 		if (surface_x >= GameState::SURFACE_SIZE) surface_x = GameState::SURFACE_SIZE - 1;
 		result.sx = surface_x;
 
 		// calculate surface z position and output calculated segment
 		const int32_t numSegments = t.numSegments;
-		const int32_t piece_z = (piece_y_angle << GameState::LOG_SURFACE_SIZE) * numSegments / (MAX_ANGLE / 8);
+		const double piece_z = piece_y_angle * GameState::SURFACE_SIZE * numSegments / (MAX_ANGLE / 8);
 
-		result.sz = piece_z & GameState::SURFACE_SIZE - 1;
-		result.segment = piece_z >> GameState::LOG_SURFACE_SIZE;
+		result.sz = std::fmod(piece_z, static_cast<double>(GameState::SURFACE_SIZE));
+		result.segment = static_cast<int32_t>(piece_z / GameState::SURFACE_SIZE);
 		return result;
 	}
 	// straight or diagonal straight
@@ -1151,9 +1182,8 @@ static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t 
 	// method is similar to that used when texture mapping
 
 	// left edge - calculate surface x position
-	const int32_t v = (x - ox) * uz + (oz - z) * ux; // needs to be divided by denominator
-	int32_t denominator = uz * vx - ux * vz;
-	// do divide afterwards to avoid need for floating point calculation
+	const double v = (x - ox) * uz + (oz - z) * ux; // needs to be divided by denominator
+	double denominator = uz * vx - ux * vz;
 	if (denominator == 0)
 	{
 		result.sx = 0; // prevent division by zero
@@ -1170,9 +1200,8 @@ static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t 
 	if (result.sx >= GameState::SURFACE_SIZE) result.sx = GameState::SURFACE_SIZE - 1;
 
 	// top edge - calculate surface z position
-	const int32_t u = (x - ox) * vz + (oz - z) * vx; // needs to be divided by denominator
+	const double u = (x - ox) * vz + (oz - z) * vx; // needs to be divided by denominator
 	denominator = ux * vz - uz * vx;
-	// do divide afterwards to avoid need for floating point calculation
 	if (denominator == 0)
 		result.sz = 0; // prevent division by zero
 	else
@@ -1187,41 +1216,38 @@ static SurfaceResult CalcSurfacePosition(const TrackState& track, const int32_t 
 
 static void CalculateActualWheelHeights(GameState& player)
 {
-	// see note at bottom of CalculateWheelXZOffsets regarding
-	// a possible different method of calculating these heights
+	// Compute each wheel's vertical position in road_height units (256-per-
+	// render-Y), starting from player_y (render-space, negative-up). The car
+	// frame is half_x = 16 render-Y above the ground at zero pitch/roll, so the
+	// magic-looking 16 multiplier is just "render-Y → road-height units". The
+	// sin offsets shift each wheel relative to the car's pitch/roll, also in
+	// road_height units (2048 per unit-sin for pitch, 1024 for roll).
 
-	auto [sin_x, cos_x] = GetSinCos(player.player_x_angle); // cosine not used
-	auto [sin_z, cos_z] = GetSinCos(player.player_z_angle); // cosine not used
+	const double sin_x = std::sin(player.player_x_angle * ANGLE_TO_RADIANS);
+	const double sin_z = std::sin(player.player_z_angle * ANGLE_TO_RADIANS);
 
-	player.rear_actual_height = player.player_y;
-	player.rear_actual_height -= static_cast<int32_t>(sin_x) << (4 + 15 - LOG_PRECISION);
-	player.rear_actual_height >>= 8;
+	const double base_height = -player.player_y * 16.0;
 
-	player.front_right_actual_height = player.player_y;
-	player.front_right_actual_height += static_cast<int32_t>(sin_x) << (4 + 15 - LOG_PRECISION);
-	player.front_right_actual_height -= static_cast<int32_t>(sin_z) << (3 + 15 - LOG_PRECISION);
-	player.front_right_actual_height >>= 8;
+	player.rear_actual_height = base_height - sin_x * 2048.0;
 
-	player.front_left_actual_height = player.player_y;
-	player.front_left_actual_height += static_cast<int32_t>(sin_x) << (4 + 15 - LOG_PRECISION);
-	player.front_left_actual_height += static_cast<int32_t>(sin_z) << (3 + 15 - LOG_PRECISION);
-	player.front_left_actual_height >>= 8;
+	player.front_right_actual_height = base_height + sin_x * 2048.0 - sin_z * 1024.0;
+
+	player.front_left_actual_height = base_height + sin_x * 2048.0 + sin_z * 1024.0;
 }
 
 static void CalculateXZSpeeds(GameState& player, const RotationMatrix& rot)
 {
-	// this function basically does the same as RotateCoordinate,
-	// then removes the precision from the resulting values
+	// this function basically does the same as RotateCoordinate.
 
-	player.player_x_speed = (player.player_world_x_speed * static_cast<int32_t>(rot[X_X_COMP])) >> LOG_PRECISION;
-	player.player_x_speed += (player.player_world_y_speed * static_cast<int32_t>(rot[X_Y_COMP])) >> LOG_PRECISION;
-	player.player_x_speed += (player.player_world_z_speed * static_cast<int32_t>(rot[X_Z_COMP])) >> LOG_PRECISION;
+	player.player_x_speed = player.player_world_x_speed * rot[X_X_COMP]
+		+ player.player_world_y_speed * rot[X_Y_COMP]
+		+ player.player_world_z_speed * rot[X_Z_COMP];
 
 	player.player_y_speed = 0;
 
-	player.player_z_speed = (player.player_world_x_speed * static_cast<int32_t>(rot[Z_X_COMP])) >> LOG_PRECISION;
-	player.player_z_speed += (player.player_world_y_speed * static_cast<int32_t>(rot[Z_Y_COMP])) >> LOG_PRECISION;
-	player.player_z_speed += (player.player_world_z_speed * static_cast<int32_t>(rot[Z_Z_COMP])) >> LOG_PRECISION;
+	player.player_z_speed = player.player_world_x_speed * rot[Z_X_COMP]
+		+ player.player_world_y_speed * rot[Z_Y_COMP]
+		+ player.player_world_z_speed * rot[Z_Z_COMP];
 }
 
 static void CalculateGravityAcceleration(GameState& player, const RotationMatrix& rot)
@@ -1229,16 +1255,13 @@ static void CalculateGravityAcceleration(GameState& player, const RotationMatrix
 	// Gravity acts on the Y axis only. Therefore only Y components are used.
 
 	// Acceleration along car's X axis
-	player.gravity_x_acceleration = (-GameState::GRAVITY_ACCELERATION *
-		static_cast<int32_t>(rot[X_Y_COMP])) >> LOG_PRECISION;
+	player.gravity_x_acceleration = -GameState::GRAVITY_ACCELERATION * rot[X_Y_COMP];
 
 	// Acceleration along car's Y axis
-	player.gravity_y_acceleration = (-GameState::GRAVITY_ACCELERATION *
-		static_cast<int32_t>(rot[Y_Y_COMP])) >> LOG_PRECISION;
+	player.gravity_y_acceleration = -GameState::GRAVITY_ACCELERATION * rot[Y_Y_COMP];
 
 	// Acceleration along car's Z axis
-	player.gravity_z_acceleration = (-GameState::GRAVITY_ACCELERATION *
-		static_cast<int32_t>(rot[Z_Y_COMP])) >> LOG_PRECISION;
+	player.gravity_z_acceleration = -GameState::GRAVITY_ACCELERATION * rot[Z_Y_COMP];
 }
 
 static int32_t damaged_limit = 10; // Actually track/league dependant (could add to track data)
@@ -1248,12 +1271,12 @@ static int32_t damaged_limit = 10; // Actually track/league dependant (could add
 static int32_t road_cushion_value = 0, fourteen_frames_elapsed = 0;
 
 // following are only global due to use by two functions - could be passed in instead
-static int32_t front_left_height_difference,
-               front_right_height_difference,
-               rear_height_difference;
+static double front_left_height_difference,
+              front_right_height_difference,
+              rear_height_difference;
 
-static int32_t front_difference_below_road,
-               overall_difference_below_road;
+static double front_difference_below_road,
+              overall_difference_below_road;
 
 static void CarCollisionDetection(const TrackState& track, GameState& player, const SoundState& sound)
 {
@@ -1304,13 +1327,13 @@ static void CarCollisionDetection(const TrackState& track, GameState& player, co
 
 	//
 
-	const int32_t average_front_amount_below_road = (player.front_left_amount_below_road + player.
-		front_right_amount_below_road) >> 1;
-	const int32_t average_amount_below_road = (average_front_amount_below_road + player.rear_amount_below_road) >> 1;
+	const double average_front_amount_below_road = (player.front_left_amount_below_road + player.
+		front_right_amount_below_road) / 2.0;
+	const double average_amount_below_road = (average_front_amount_below_road + player.rear_amount_below_road) / 2.0;
 
 	CalculateCarCollisionAcceleration(player, average_amount_below_road);
 
-	int32_t difference = (player.front_left_amount_below_road - player.front_right_amount_below_road) * 3;
+	double difference = (player.front_left_amount_below_road - player.front_right_amount_below_road) * 3;
 	// limit to maximum
 	if (difference > 0x1000) difference = 0x1000;
 	if (difference < -0x1000) difference = -0x1000;
@@ -1328,9 +1351,9 @@ static void CarCollisionDetection(const TrackState& track, GameState& player, co
 	if (!player.touching_road && !player.on_chains)
 	{
 		// get angle in Amiga StuntCarRacer format (i.e. correct sign)
-		const int32_t angle = player.player_x_angle < _180_DEGREES
-			                      ? player.player_x_angle
-			                      : player.player_x_angle - _360_DEGREES;
+		const double angle = player.player_x_angle < _180_DEGREES
+			                     ? player.player_x_angle
+			                     : player.player_x_angle - _360_DEGREES;
 
 		if ((angle < 0 && (track.TrackID == ROLLER_COASTER || track.TrackID == SKI_JUMP))
 			||
@@ -1382,35 +1405,35 @@ static void CarCollisionDetection(const TrackState& track, GameState& player, co
 	}
 }
 
-static WheelCollisionResult CalculateWheelCollision(GameState& player, const int32_t road_height,
-                                                    const int32_t actual_height,
-                                                    const int32_t old_difference,
-                                                    const int32_t amount_below_road_in,
+static WheelCollisionResult CalculateWheelCollision(GameState& player, const double road_height,
+                                                    const double actual_height,
+                                                    const double old_difference,
+                                                    const double amount_below_road_in,
                                                     const int32_t damage_in)
 {
 	WheelCollisionResult result = {};
 	result.height_difference = road_height - actual_height - player.wreck_wheel_height_reduction;
 
-	int32_t new_difference = result.height_difference;
+	double new_difference = result.height_difference;
 	if (new_difference > 0x1400)
 		new_difference = 0x1400;
 	else if (new_difference < -0x300)
 		new_difference = -0x300;
 
-	int32_t amount_below_road = new_difference - old_difference;
-	amount_below_road = ((amount_below_road * INCREASE) >> 8) + new_difference;
+	double amount_below_road = new_difference - old_difference;
+	amount_below_road = (amount_below_road * INCREASE) / 256.0 + new_difference;
 
 	result.damage = damage_in;
 
 	if (amount_below_road >= 0)
 	{
-		const int32_t old_amount_below_road = amount_below_road_in;
+		const double old_amount_below_road = amount_below_road_in;
 		result.amount_below_road = amount_below_road;
 
 		if (amount_below_road >= 0x400 && old_amount_below_road < 0x200)
 			player.grounded_count++; // wheel grounded - update grounded wheel count
 
-		int32_t damage = result.amount_below_road - road_cushion_value * 256;
+		int32_t damage = static_cast<int32_t>(result.amount_below_road) - road_cushion_value * 256;
 		if (damage >= 0x700)
 		{
 			if (damage > player.damage_value)
@@ -1448,7 +1471,7 @@ static WheelCollisionResult CalculateWheelCollision(GameState& player, const int
 	return result;
 }
 
-static void CalculateCarCollisionAcceleration(GameState& player, const int32_t average_amount_below_road)
+static void CalculateCarCollisionAcceleration(GameState& player, const double average_amount_below_road)
 {
 	// average_amount_below_road is the force exerted by the road on the car.
 	//
@@ -1461,92 +1484,54 @@ static void CalculateCarCollisionAcceleration(GameState& player, const int32_t a
 	//
 	// Z acceleration = force * sinx
 
-	constexpr int32_t log_car_length_factor = 4, log_car_width_factor = 3; // Length is twice the width
-	int32_t surface_value;
+	constexpr double car_length_factor = 16.0, car_width_factor = 8.0; // Length is twice the width
 
 	// y_inclination_to_road is zero because road exists in X and Z planes only
 
 	// Calculate x_inclination_to_road
-	const int32_t front_height_difference = (front_left_height_difference +
-		front_right_height_difference) >> 1;
-	const int32_t x_inclination_to_road = (front_height_difference -
-		rear_height_difference) >> log_car_length_factor;
+	const double front_height_difference = (front_left_height_difference +
+		front_right_height_difference) / 2.0;
+	const double x_inclination_to_road = (front_height_difference -
+		rear_height_difference) / car_length_factor;
 
 	// Calculate sin and cos of X angle between car and road surface
 	auto [surface_sinx, surface_cosx] = CalculateInclinationSinCos(x_inclination_to_road);
 
 	// Calculate z_inclination_to_road
-	const int32_t z_inclination_to_road = (front_left_height_difference -
-		front_right_height_difference) >> log_car_width_factor;
+	const double z_inclination_to_road = (front_left_height_difference -
+		front_right_height_difference) / car_width_factor;
 
 	// Calculate sin and cos of Z angle between car and road surface
 	auto [surface_sinz, surface_cosz] = CalculateInclinationSinCos(z_inclination_to_road);
 
-	const int32_t surface_cosx_cosz = (surface_cosx * surface_cosz) >> 8;
-	const int32_t surface_cosx_sinz = (surface_cosx * surface_sinz) >> 8;
+	const double surface_cosx_cosz = surface_cosx * surface_cosz;
+	const double surface_cosx_sinz = surface_cosx * surface_sinz;
 
-	// Calculate car collision X acceleration 
+	// Calculate car collision X acceleration
+	const double surface_x = z_inclination_to_road < 0 ? -surface_cosx_sinz : surface_cosx_sinz;
+	player.car_collision_x_acceleration = average_amount_below_road * surface_x;
 
-	if (z_inclination_to_road < 0)
-		surface_value = -surface_cosx_sinz;
-	else
-		surface_value = surface_cosx_sinz;
+	// Calculate car collision Y acceleration
+	player.car_collision_y_acceleration = average_amount_below_road * surface_cosx_cosz;
 
-	player.car_collision_x_acceleration = (average_amount_below_road * surface_value) >> 8;
-
-	// Calculate car collision Y acceleration 
-
-	surface_value = surface_cosx_cosz;
-
-	player.car_collision_y_acceleration = (average_amount_below_road * surface_value) >> 8;
-
-	// Calculate car collision Z acceleration 
-
-	if (x_inclination_to_road < 0)
-		surface_value = surface_sinx;
-	else
-		surface_value = -surface_sinx;
-
-	player.car_collision_z_acceleration = (average_amount_below_road * surface_value) >> 8;
+	// Calculate car collision Z acceleration
+	const double surface_z = x_inclination_to_road < 0 ? surface_sinx : -surface_sinx;
+	player.car_collision_z_acceleration = average_amount_below_road * surface_z;
 }
 
-// Lookup table: maps sin values (0..255, in steps of 2) to cos values (* 256).
-// 128 entries: cos(asin(i/256)) * 256 for i = 0, 2, 4, ..., 254.
-static int32_t Cosine_Conversion_Table[] =
+static InclinationResult CalculateInclinationSinCos(const double inclination_in)
 {
-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xfe,
-	0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0xfc, 0xfc,
-	0xfb, 0xfb, 0xfb, 0xfa, 0xfa, 0xf9, 0xf9, 0xf8,
-	0xf8, 0xf7, 0xf7, 0xf6, 0xf6, 0xf5, 0xf4, 0xf4,
-	0xf3, 0xf3, 0xf2, 0xf1, 0xf0, 0xf0, 0xef, 0xee,
-	0xed, 0xec, 0xec, 0xeb, 0xea, 0xe9, 0xe8, 0xe7,
-	0xe6, 0xe5, 0xe4, 0xe3, 0xe2, 0xe1, 0xe0, 0xdf,
-	0xde, 0xdd, 0xdb, 0xda, 0xd9, 0xd8, 0xd6, 0xd5,
-	0xd4, 0xd2, 0xd1, 0xcf, 0xce, 0xcc, 0xcb, 0xc9,
-	0xc8, 0xc6, 0xc5, 0xc3, 0xc1, 0xbf, 0xbe, 0xbc,
-	0xba, 0xb8, 0xb6, 0xb4, 0xb2, 0xb0, 0xae, 0xac,
-	0xa9, 0xa7, 0xa5, 0xa2, 0xa0, 0x9d, 0x9b, 0x98,
-	0x95, 0x92, 0x8f, 0x8c, 0x89, 0x86, 0x83, 0x7f,
-	0x7c, 0x78, 0x74, 0x70, 0x6c, 0x68, 0x63, 0x5e,
-	0x59, 0x53, 0x4d, 0x47, 0x3f, 0x37, 0x2d, 0x20
-};
+	// inclination_in is effectively the sin of the inclination angle, in the
+	// same 256-per-unit fixed-point scale as the height differences feeding it
+	// (so a magnitude of 256 == sin = 1.0). The sign is handled by the caller
+	// when applying the result.
 
-static InclinationResult CalculateInclinationSinCos(int32_t inclination_in)
-{
-	// inclination_in is effectively the sin of the inclination angle (unsigned).
-	// The sign is handled by the caller when applying the result.
-
-	inclination_in = abs(inclination_in);
+	double s = std::abs(inclination_in) / 256.0;
+	if (s > 1.0) s = 1.0;
 
 	InclinationResult result;
-	if (inclination_in < 256)
-		result.sin = inclination_in;
-	else
-		result.sin = 255;
-
-	// note only 128 values in table
-	result.cos = Cosine_Conversion_Table[result.sin / 2];
+	result.sin = s;
+	result.cos = std::sqrt(1.0 - s * s);
 	return result;
 }
 
@@ -1558,18 +1543,82 @@ static void LiftCarOntoTrack(GameState& player)
 	// The spring-damper collision system has an equilibrium slightly below
 	// the road; this function acts as a hard floor to limit penetration
 	// during transients (jump landings, bumps, game start).
-	const int32_t avg_diff = (front_left_height_difference +
+	const double avg_diff = (front_left_height_difference +
 		front_right_height_difference +
-		rear_height_difference) / 3;
+		rear_height_difference) / 3.0;
 
-	constexpr int32_t MAX_BELOW_ROAD = 0x200;
+	constexpr double MAX_BELOW_ROAD = 0x200;
 	if (avg_diff > MAX_BELOW_ROAD)
 	{
-		player.player_y += (avg_diff - MAX_BELOW_ROAD) << 8;
+		// Lift the car (render-space negative-up: lifting = decreasing player_y).
+		// avg_diff is in road_height units; /-16 converts to render-space y.
+		player.player_y -= (avg_diff - MAX_BELOW_ROAD) / 16.0;
 
 		if (player.player_world_y_speed < 0)
 			player.player_world_y_speed /= 2;
 	}
+}
+
+// Hard floor enforced AFTER the per-frame velocity integration. The spring
+// LiftCarOntoTrack uses height differences from the start-of-frame sample,
+// which can miss large XZ moves into a rising surface and leave the car
+// underneath the track. This function re-samples the road at the new wheel
+// positions and lifts the car so it can never end up below the surface.
+static void EnforceTrackFloor(TrackState& track, GameState& player)
+{
+	if (!player.drop_start_done) return;
+
+	// Save the spring-filter state so re-running CalculateRoadWheelHeights
+	// here does not corrupt the next frame's averaging input.
+	const double saved_fl = player.front_left_road_height;
+	const double saved_fr = player.front_right_road_height;
+	const double saved_rr = player.rear_road_height;
+	const double saved_z_speed = player.player_z_speed;
+
+	// Bypass CalculateRoadWheelHeight's averaging so we get the raw road
+	// height at the *current* (post-integration) wheel positions. Otherwise
+	// the lagged value can leave us still clipping into a rising ramp.
+	player.player_z_speed = 0xA00;
+
+	const auto rot = CalcYXZTrigCoefficients(player.player_x_angle,
+	                                         player.player_y_angle,
+	                                         player.player_z_angle);
+	CalculateWheelXZOffsets(player, rot);
+	CalculateRoadWheelHeights(track, player);
+	CalculateActualWheelHeights(player);
+
+	player.player_z_speed = saved_z_speed;
+
+	const double fl = player.front_left_road_height - player.front_left_actual_height;
+	const double fr = player.front_right_road_height - player.front_right_actual_height;
+	const double rr = player.rear_road_height - player.rear_actual_height;
+
+	double max_below = fl;
+	if (fr > max_below) max_below = fr;
+	if (rr > max_below) max_below = rr;
+
+	// Allow up to MAX_BELOW_ROAD of penetration so we don't fight the
+	// spring's equilibrium during normal grounded driving.
+	constexpr double MAX_BELOW_ROAD = 0x200;
+	if (max_below > MAX_BELOW_ROAD)
+	{
+		// Lift the car (render-space negative-up: lifting = decreasing player_y).
+		// max_below is in road_height units; /-16 converts to render-space y.
+		player.player_y -= (max_below - MAX_BELOW_ROAD) / 16.0;
+
+		// Kill any remaining downward velocity so the car doesn't immediately
+		// drive itself back through the surface on the next frame.
+		if (player.player_world_y_speed < 0)
+			player.player_world_y_speed = 0;
+
+		CalculateActualWheelHeights(player);
+	}
+
+	// Restore the spring-filter inputs so next frame's averaged sample is
+	// computed from the same prev-frame value it would have used without us.
+	player.front_left_road_height = saved_fl;
+	player.front_right_road_height = saved_fr;
+	player.rear_road_height = saved_rr;
 }
 
 static void CalculateTotalAcceleration(GameState& player)
@@ -1580,10 +1629,11 @@ static void CalculateTotalAcceleration(GameState& player)
 	// reduce engine_z_acceleration if car is accelerating and not travelling backwards
 	// this probably simulates the effect of wind resistance and the
 	// car having reduced ability to accelerate as speed increases
-	const int32_t reduction = (player.engine_z_acceleration >> 8 | player.player_z_speed >> 8) & 0xff;
+	const int32_t reduction = (static_cast<int32_t>(player.engine_z_acceleration) >> 8 |
+		static_cast<int32_t>(player.player_z_speed) >> 8) & 0xff;
 	if ((reduction & 0x80) != 0x80) // i.e. not negative
 	{
-		if ((player.engine_z_acceleration & 0xff) != 0)
+		if ((static_cast<int32_t>(player.engine_z_acceleration) & 0xff) != 0)
 		{
 			player.engine_z_acceleration -= reduction;
 		}
@@ -1592,7 +1642,7 @@ static void CalculateTotalAcceleration(GameState& player)
 	// limit engine_z_acceleration to (2 * car_collision_y_acceleration) ?
 	// this possibly prevents the car from accelerating
 	// if it is not touching the road sufficiently (not enough grip)
-	int32_t twice_y = GetTwiceCollisionYAcceleration(player); // should always be +'ve
+	double twice_y = GetTwiceCollisionYAcceleration(player); // should always be +'ve
 	if (abs(player.engine_z_acceleration) >= twice_y)
 	{
 		if (player.engine_z_acceleration < 0)
@@ -1608,7 +1658,7 @@ static void CalculateTotalAcceleration(GameState& player)
 	CalculateXAcceleration(player);
 }
 
-static int32_t GetTwiceCollisionYAcceleration(const GameState& player)
+static double GetTwiceCollisionYAcceleration(const GameState& player)
 {
 	if (!player.touching_road)
 		return 0;
@@ -1618,10 +1668,10 @@ static int32_t GetTwiceCollisionYAcceleration(const GameState& player)
 
 static void CalculateXAcceleration(GameState& player)
 {
-	int32_t acceleration = player.gravity_x_acceleration + player.car_collision_x_acceleration;
-	const int32_t speed_diff = acceleration - player.player_x_speed; // speed increase minus current speed
+	double acceleration = player.gravity_x_acceleration + player.car_collision_x_acceleration;
+	const double speed_diff = acceleration - player.player_x_speed; // speed increase minus current speed
 
-	int32_t twice_y = GetTwiceCollisionYAcceleration(player); // should always be +'ve
+	double twice_y = GetTwiceCollisionYAcceleration(player); // should always be +'ve
 	if (abs(speed_diff) >= twice_y)
 	{
 		if (player.player_x_speed < 0)
@@ -1644,7 +1694,7 @@ static void CalculateXAcceleration(GameState& player)
 	}
 }
 
-static int32_t y_angle_difference, difference_angle, pos_difference_angle;
+static double y_angle_difference, difference_angle, pos_difference_angle;
 
 static void CalculateSteering(const TrackState& track, GameState& player)
 {
@@ -1668,13 +1718,14 @@ static void CalculateSteering(const TrackState& track, GameState& player)
 	const int32_t section_steering_amount = t.steeringAmount;
 
 	// calculate car x/z position relative to the piece (and in same range)
-	auto [rx, rz] = CalcXZRelativeToPiece(track, player.player_x, player.player_z, piece);
+	auto [rx, rz] = CalcXZRelativeToPiece(track, player.player_x,
+	                                      player.player_z, piece);
 
 	// calculate y angle of piece at the point where the centre of the car lies
-	int32_t section_y_angle = CalcSectionYAngle(track, piece, rx, rz);
+	double section_y_angle = CalcSectionYAngle(track, piece, rx, rz);
 
 	// Reverse section_y_angle for PC StuntCarRacer convention
-	section_y_angle = -section_y_angle & MAX_ANGLE - 1;
+	section_y_angle = WrapAngle(-section_y_angle);
 
 	// calculate the difference between the section and player's y angle
 	// this value should go increasingly -'ve when turning to the right
@@ -1725,7 +1776,7 @@ static void CalculateSteering(const TrackState& track, GameState& player)
 
 	// Save a scaled positive difference angle ranging from 0 to $7fff
 	if (pos_difference_angle < 0x800)
-		scaled_pos_difference_angle = pos_difference_angle << 4;
+		scaled_pos_difference_angle = static_cast<int32_t>(pos_difference_angle * 16);
 	else
 		scaled_pos_difference_angle = 0x7fff; // set to maximum
 
@@ -1814,7 +1865,7 @@ static void CalculateSteeringAcceleration(GameState& player, const int32_t steer
 	// get y_angle_difference, pos_difference_angle from calling function
 
 	// following value calculated in slightly odd way, to match Amiga StuntCarRacer
-	int32_t steering_acceleration = (player.player_z_speed * steering_amount) >> 8;
+	double steering_acceleration = (player.player_z_speed * steering_amount) / 256.0;
 
 	if (player.left_right_value < 0)
 	{
@@ -1822,7 +1873,7 @@ static void CalculateSteeringAcceleration(GameState& player, const int32_t steer
 		steering_acceleration = -steering_acceleration;
 	}
 
-	steering_acceleration = steering_acceleration >> 3;
+	steering_acceleration = steering_acceleration / 8.0;
 
 	// store steering acceleration
 	y_angle_difference = steering_acceleration;
@@ -1841,7 +1892,7 @@ static void AlignCarWithRoad(GameState& player)
 
 	// eventually get difference_angle, pos_difference_angle from calling function
 
-	int32_t adjust = pos_difference_angle;
+	double adjust = pos_difference_angle;
 
 	if (adjust >= 256)
 	{
@@ -1867,11 +1918,11 @@ static void AlignCarWithRoad(GameState& player)
 
 	// Adjustment of player's Y angle increases as player's speed increases
 
-	int32_t speed = abs(player.player_z_speed) + 0xa00;
+	int32_t speed = abs(static_cast<int32_t>(player.player_z_speed)) + 0xa00;
 	if (speed > 0x7f00)
 		speed = 0x7f00; // set speed amount to maximum
 
-	adjust = (adjust * speed) >> 15;
+	adjust = (adjust * speed) / 32768.0;
 
 	if (adjust == 0) adjust = 1; // atleast do some adjusting
 
@@ -1886,7 +1937,7 @@ static void AdjustSteeringAcceleration(GameState& player)
 {
 	// eventually get y_angle_difference from calling function
 
-	const int32_t acceleration = y_angle_difference - player.player_y_rotation_speed;
+	const double acceleration = y_angle_difference - player.player_y_rotation_speed;
 
 	// store steering acceleration
 	// needs to correct signs because PC StuntCarRacer rotation is in opposite direction
@@ -1897,9 +1948,9 @@ static void AdjustSteeringAcceleration(GameState& player)
 }
 
 // current piece x/z co-ords (i.e. four corners of piece)
-static int32_t px1, pz1, px2, pz2, px3, pz3, px4, pz4;
+static double px1, pz1, px2, pz2, px3, pz3, px4, pz4;
 
-static int32_t IdentifyPiece(const TrackState& track, const int32_t x, const int32_t z, int32_t piece)
+static int32_t IdentifyPiece(const TrackState& track, const double x, const double z, int32_t piece)
 {
 	// find the piece that the point is located within
 
@@ -1914,7 +1965,7 @@ static int32_t IdentifyPiece(const TrackState& track, const int32_t x, const int
 	//
 
 	// check point is not before or after piece (z direction)
-	int32_t xs, xp, zs, zp;
+	double xs, xp, zs, zp;
 	int32_t before_piece = true, after_piece = true;
 
 	// 'before piece' loop
@@ -2011,12 +2062,12 @@ static void GetPieceCoords(const TrackState& track, const int32_t piece)
 static void CalculateWorldAcceleration(GameState& player, const RotationMatrix& rot)
 {
 	// Transform player-local accelerations (X, Y, Z) into world-space accelerations.
-	// Same operation as WorldOffset, but removes precision from the result.
-	auto transform = [&](const int32_t x_comp, const int32_t y_comp, const int32_t z_comp) -> int32_t
+	// Same operation as WorldOffset.
+	auto transform = [&](const int32_t x_comp, const int32_t y_comp, const int32_t z_comp) -> double
 	{
-		return ((player.player_x_acceleration * static_cast<int32_t>(rot[x_comp])) >> LOG_PRECISION)
-			+ ((player.player_y_acceleration * static_cast<int32_t>(rot[y_comp])) >> LOG_PRECISION)
-			+ ((player.player_z_acceleration * static_cast<int32_t>(rot[z_comp])) >> LOG_PRECISION);
+		return player.player_x_acceleration * rot[x_comp]
+			+ player.player_y_acceleration * rot[y_comp]
+			+ player.player_z_acceleration * rot[z_comp];
 	};
 
 	player.total_world_x_acceleration = transform(X_X_COMP, Y_X_COMP, Z_X_COMP);
@@ -2027,13 +2078,13 @@ static void CalculateWorldAcceleration(GameState& player, const RotationMatrix& 
 
 static void ReduceWorldAcceleration(GameState& game)
 {
-	int32_t amount = 0;
+	double amount = 0;
 	int32_t factor = 1; // maximum reduction factor (least drag)
 	bool special_case = false;
 
 	if (game.touching_road || game.on_chains)
 	{
-		amount = abs(game.car_to_road_collision_z_acceleration >> 8);
+		amount = abs(game.car_to_road_collision_z_acceleration / 256.0);
 
 		if (amount >= 3 || game.off_map_status != 0 || WRECKED || game.on_chains)
 		{
@@ -2063,9 +2114,10 @@ static void ReduceWorldAcceleration(GameState& game)
 	}
 
 	// Apply speed-proportional drag to world accelerations
-	game.total_world_x_acceleration -= ((game.player_world_x_speed * amount) >> 16) >> factor;
-	game.total_world_y_acceleration -= ((game.player_world_y_speed * amount) >> 16) >> factor;
-	game.total_world_z_acceleration -= ((game.player_world_z_speed * amount) >> 16) >> factor;
+	const double divisor = 65536.0 * (1 << factor);
+	game.total_world_x_acceleration -= (game.player_world_x_speed * amount) / divisor;
+	game.total_world_y_acceleration -= (game.player_world_y_speed * amount) / divisor;
+	game.total_world_z_acceleration -= (game.player_world_z_speed * amount) / divisor;
 }
 
 static void CalculateXZRotationAcceleration(GameState& player)
@@ -2087,110 +2139,113 @@ static void CalculateXZRotationAcceleration(GameState& player)
 	// - perhaps values used are really accelerations rather than inclinations
 
 	player.player_x_rotation_acceleration = overall_difference_below_road -
-		(player.player_x_rotation_speed >> 4);
+		(player.player_x_rotation_speed / 16.0);
 	if (player.touching_road)
 	{
 		// This part lifts the car up at the front during forwards acceleration
 		// and, vice versa, dips the front of the car during backwards acceleration.
-		player.player_x_rotation_acceleration += player.player_z_acceleration >> 2;
+		player.player_x_rotation_acceleration += player.player_z_acceleration / 4.0;
 	}
 
 	player.player_z_rotation_acceleration = front_difference_below_road -
-		(player.player_z_rotation_speed >> 4);
+		(player.player_z_rotation_speed / 16.0);
 }
 
 static void UpdatePlayersRotationSpeed(GameState& player)
 {
-	int32_t acceleration = (player.player_x_rotation_acceleration * REDUCTION) >> 8;
+	double acceleration = (player.player_x_rotation_acceleration * REDUCTION) / 256.0;
 	player.player_x_rotation_speed += acceleration;
 
-	acceleration = (player.player_y_rotation_acceleration * REDUCTION) >> 8;
+	acceleration = (player.player_y_rotation_acceleration * REDUCTION) / 256.0;
 	player.player_y_rotation_speed += acceleration;
 
-	acceleration = (player.player_z_rotation_acceleration * REDUCTION) >> 8;
+	acceleration = (player.player_z_rotation_acceleration * REDUCTION) / 256.0;
 	player.player_z_rotation_speed += acceleration;
 }
 
 static void CalculateFinalRotationSpeed(GameState& player)
 {
-	auto [sin_x, cos_x] = GetSinCos(player.player_x_angle); // cosine not used
-	auto [sin_z, cos_z] = GetSinCos(player.player_z_angle);
+	const double sin_x = std::sin(player.player_x_angle * ANGLE_TO_RADIANS);
+	const double rz = player.player_z_angle * ANGLE_TO_RADIANS;
+	const double sin_z = std::sin(rz);
+	const double cos_z = std::cos(rz);
 
 	// shouldn't need changing because Amiga StuntCarRacer Z rotation appears to be same as
 	// PC StuntCarRacer Z rotation (i.e. RotX = Xcosz - Ysinz, RotY = Xsinz + Ycosz)
 	// and so does X rotation
 
-	player.player_final_x_rotation_speed = (player.player_x_rotation_speed * static_cast<int32_t>(cos_z)) >>
-		LOG_PRECISION;
-	player.player_final_x_rotation_speed += (player.player_y_rotation_speed * -sin_z) >> LOG_PRECISION;
+	player.player_final_x_rotation_speed = player.player_x_rotation_speed * cos_z;
+	player.player_final_x_rotation_speed += player.player_y_rotation_speed * -sin_z;
 
-	player.player_final_y_rotation_speed = (player.player_x_rotation_speed * static_cast<int32_t>(sin_z)) >>
-		LOG_PRECISION;
-	player.player_final_y_rotation_speed += (player.player_y_rotation_speed * static_cast<int32_t>(cos_z)) >>
-		LOG_PRECISION;
+	player.player_final_y_rotation_speed = player.player_x_rotation_speed * sin_z;
+	player.player_final_y_rotation_speed += player.player_y_rotation_speed * cos_z;
 
 	// Calculate final Z rotation speed by rotating Y rotation speed about
 	// the X axis and adding it onto the Z rotation speed.
 	player.player_final_z_rotation_speed = player.player_z_rotation_speed;
-	player.player_final_z_rotation_speed += (player.player_final_y_rotation_speed * static_cast<int32_t>(sin_x)) >>
-		LOG_PRECISION;
+	player.player_final_z_rotation_speed += player.player_final_y_rotation_speed * sin_x;
 }
 
 static void UpdatePlayersWorldSpeed(GameState& player)
 {
-	int32_t acceleration = (player.total_world_x_acceleration * REDUCTION) >> 8;
+	double acceleration = (player.total_world_x_acceleration * REDUCTION) / 256.0;
 	player.player_world_x_speed += acceleration;
 
-	acceleration = (player.total_world_y_acceleration * REDUCTION) >> 8;
+	acceleration = (player.total_world_y_acceleration * REDUCTION) / 256.0;
 	player.player_world_y_speed += acceleration;
 
-	acceleration = (player.total_world_z_acceleration * REDUCTION) >> 8;
+	acceleration = (player.total_world_z_acceleration * REDUCTION) / 256.0;
 	player.player_world_z_speed += acceleration;
 }
 
 static void UpdatePlayersPosition(GameState& player)
 {
-	// Set player's new position
-	int32_t speed = player.player_world_x_speed * REDUCTION * PC_FACTOR;
-	player.player_x += speed;
+	// Convert each per-frame velocity into a render-space position delta.
+	// world_*_speed are in physics-internal acceleration units; the
+	// REDUCTION * PC_FACTOR / PRECISION factor (XZ) is the historical Amiga
+	// rescale. The Y rescale also folds in LOCAL_Y_FACTOR/2 and a sign flip
+	// because render-space Y is negative-up.
+	constexpr double XZ_DELTA_RESCALE = static_cast<double>(REDUCTION) * PC_FACTOR / PRECISION;
+	constexpr double Y_DELTA_RESCALE = -static_cast<double>(REDUCTION) *
+		GameState::LOCAL_Y_FACTOR / 2.0 / PRECISION;
+	player.player_x += player.player_world_x_speed * XZ_DELTA_RESCALE;
+	player.player_y += player.player_world_y_speed * Y_DELTA_RESCALE;
+	player.player_z += player.player_world_z_speed * XZ_DELTA_RESCALE;
 
-	speed = (player.player_world_y_speed * REDUCTION) >> 1;
-	player.player_y += speed;
 
-	speed = player.player_world_z_speed * REDUCTION * PC_FACTOR;
-	player.player_z += speed;
+	// Hard ceiling: render-space negative-up, so cap at the most-negative
+	// extreme. Old `player_y_internal >= 0x10000000` in render-space is
+	// player_y <= -65536.
+	if (player.player_y < -65536.0)
+		player.player_y = -65536.0;
 
+	// Set player's new angles. Now that angles are continuous doubles in
+	// MAX_ANGLE units, we no longer need to truncate the per-frame delta.
+	double angle_speed = (player.player_final_x_rotation_speed * REDUCTION) / 256.0;
+	player.player_x_angle += angle_speed;
 
-	if (player.player_y >= 0x10000000)
-		player.player_y = 0x10000000;
+	angle_speed = (player.player_final_y_rotation_speed * REDUCTION) / 256.0;
+	player.player_y_angle += angle_speed;
 
-	// Set player's new angles 
-
-	speed = (player.player_final_x_rotation_speed * REDUCTION) >> 8;
-	player.player_x_angle += speed;
-
-	speed = (player.player_final_y_rotation_speed * REDUCTION) >> 8;
-	player.player_y_angle += speed;
-
-	speed = (player.player_final_z_rotation_speed * REDUCTION) >> 8;
-	player.player_z_angle += speed;
+	angle_speed = (player.player_final_z_rotation_speed * REDUCTION) / 256.0;
+	player.player_z_angle += angle_speed;
 
 	// Limit to valid range (no longer stored as words)
-	player.player_x_angle &= MAX_ANGLE - 1;
-	player.player_y_angle &= MAX_ANGLE - 1;
-	player.player_z_angle &= MAX_ANGLE - 1;
+	player.player_x_angle = WrapAngle(player.player_x_angle);
+	player.player_y_angle = WrapAngle(player.player_y_angle);
+	player.player_z_angle = WrapAngle(player.player_z_angle);
 
 	// Clamp X and Z angles to prevent extreme tilting
-	const int32_t limit = player.at_side_byte == 0xe0 && player.smaller_limit_required
-		                      ? 11 * 256 // all wheels off road and car on ground
-		                      : 45 * 256;
+	const double limit = player.at_side_byte == 0xe0 && player.smaller_limit_required
+		                     ? 11 * 256 // all wheels off road and car on ground
+		                     : 45 * 256;
 
-	auto clampAngle = [limit](int32_t& angle_inout, int32_t& rotation_speed)
+	auto clampAngle = [limit](double& angle_inout, double& rotation_speed)
 	{
 		// get angle in Amiga StuntCarRacer format (i.e. correct sign)
-		int32_t angle = angle_inout < _180_DEGREES ? angle_inout : angle_inout - _360_DEGREES;
+		double angle = angle_inout < _180_DEGREES ? angle_inout : angle_inout - _360_DEGREES;
 
-		if (abs(angle) > limit)
+		if (std::abs(angle) > limit)
 		{
 			angle = angle >= 0 ? limit : -limit;
 
@@ -2207,26 +2262,26 @@ static void UpdatePlayersPosition(GameState& player)
 	clampAngle(player.player_z_angle, player.player_z_rotation_speed);
 }
 
-static int32_t CalcSectionYAngle(const TrackState& track, const int32_t piece,
-                                 const int32_t x,
-                                 const int32_t z)
+static double CalcSectionYAngle(const TrackState& track, const int32_t piece,
+                                const double x,
+                                const double z)
 {
 	const auto& t = track.Track[piece];
 
 	// check for and handle straight
 	if (t.type == 0x00)
 	{
-		return -t.roughPieceAngle & MAX_ANGLE - 1;
+		return WrapAngle(-static_cast<double>(t.roughPieceAngle));
 	}
 	// check for and handle diagonal straight
 	if (t.type == 0x40)
 	{
-		return -(t.roughPieceAngle + MAX_ANGLE / 8) & MAX_ANGLE - 1;
+		return WrapAngle(-static_cast<double>(t.roughPieceAngle + MAX_ANGLE / 8));
 	}
 
 	// must be a curve (type will be -'ve)
 	const auto curve = CalcCurveMeasurements(track, piece, x, z);
-	int32_t section_y_angle = curve.y_angle;
+	double section_y_angle = curve.y_angle;
 
 	// change sign if right hand curve (i.e. default calculation is for left hand curve)
 	if (!t.curveToLeft)
@@ -2240,14 +2295,14 @@ static int32_t CalcSectionYAngle(const TrackState& track, const int32_t piece,
 		section_y_angle += MAX_ANGLE / 2; // plus 180 degrees
 
 	// limit to valid range
-	return section_y_angle & MAX_ANGLE - 1;
+	return WrapAngle(section_y_angle);
 }
 
 static CurveMeasurements CalcCurveMeasurements(const TrackState& track, const int32_t piece,
-                                               const int32_t x,
-                                               const int32_t z)
+                                               const double x,
+                                               const double z)
 {
-	int32_t xc, zc;
+	double xc, zc;
 	double o, a, radians;
 
 	// NOTE: Assumes x/z are relative to (and in same range as) piece co-ordinates
@@ -2264,18 +2319,18 @@ static CurveMeasurements CalcCurveMeasurements(const TrackState& track, const in
 	// get first and last co-ordinates from inner or outer edge
 	const int32_t first = 0, last = numSegments * 4;
 
-	int32_t xf = t.coords[first].x;
-	int32_t zf = t.coords[first].z;
-	int32_t xl = t.coords[last].x;
-	int32_t zl = t.coords[last].z;
+	double xf = t.coords[first].x;
+	double zf = t.coords[first].z;
+	double xl = t.coords[last].x;
+	double zl = t.coords[last].z;
 
 	// assumes all curved pieces are 45 degree circular arcs
-	const int32_t radius = abs(xl - xf) + abs(zl - zf);
+	const double radius = std::abs(xl - xf) + std::abs(zl - zf);
 
 	// Use horizontal/vertical edge when calculating circle centre
 	// check first edge is horizontal/vertical, if not then use last edge
-	int32_t xo = t.coords[first + 1].x;
-	int32_t zo = t.coords[first + 1].z;
+	double xo = t.coords[first + 1].x;
+	double zo = t.coords[first + 1].z;
 	if (xo != xf && zo != zf)
 	{
 		// use last edge
@@ -2307,8 +2362,8 @@ static CurveMeasurements CalcCurveMeasurements(const TrackState& track, const in
 
 		zc = zf;
 
-		o = static_cast<double>(z - zc);
-		a = static_cast<double>(x - xc);
+		o = z - zc;
+		a = x - xc;
 	}
 	else if (zo != zf)
 	{
@@ -2320,8 +2375,8 @@ static CurveMeasurements CalcCurveMeasurements(const TrackState& track, const in
 		else
 			zc = zf - radius;
 
-		o = static_cast<double>(x - xc);
-		a = static_cast<double>(z - zc);
+		o = x - xc;
+		a = z - zc;
 	}
 	else
 	{
@@ -2334,13 +2389,9 @@ static CurveMeasurements CalcCurveMeasurements(const TrackState& track, const in
 	else
 		radians = atan(o / a); // inverse tan
 
-	// convert radians to internal angle (also round up)
+	// convert radians to internal angle
 	const double angle = radians * static_cast<double>(MAX_ANGLE) / (static_cast<double>(2) * PI);
-	// convert to absolute and round up as follows (because abs() isn't for doubles)
-	if (angle > 0)
-		result.y_angle = static_cast<int32_t>(angle + 0.5);
-	else
-		result.y_angle = static_cast<int32_t>(0.5 - angle);
+	result.y_angle = std::abs(angle);
 
 	// output radius
 	result.radius = radius;
@@ -2371,25 +2422,24 @@ static void PositionCarAbovePiece(TrackState& track, GameState& player, int32_t 
 	// Should also reject Track specific pieces (DAT.1c8e8)
 
 	// calculate x/z position of piece's front left corner, within world
-	const int32_t piece_x = track.Track[piece].x << LOG_CUBE_SIZE;
-	const int32_t piece_z = track.Track[piece].z << LOG_CUBE_SIZE;
+	// (render-space, matches player_x/z).
+	const double piece_x = track.Track[piece].x * WORLD_CUBE_SIZE;
+	const double piece_z = track.Track[piece].z * WORLD_CUBE_SIZE;
 
 	// set car x/z position to middle of piece
-	player.player_x = piece_x + CUBE_SIZE / 2; // + CUBE_SIZE/16;
-	player.player_z = piece_z + CUBE_SIZE / 2; // + CUBE_SIZE/16;
+	player.player_x = piece_x + WORLD_CUBE_SIZE / 2;
+	player.player_z = piece_z + WORLD_CUBE_SIZE / 2;
 
 	// set car y position
-	int32_t height = CalculateWorldRoadHeight(track, player, 0, player.player_x, player.player_z);
+	const double height = CalculateWorldRoadHeight(track, player, 0, player.player_x, player.player_z);
 
-	// convert the result to PC StuntCarRacer magnitude
-	height = (height / PC_FACTOR) >> (LOG_PRECISION - 3);
-
-	// set car y position: place car on the road plus the chain drop offset, so
-	// the chain descent (chain_height_remaining) brings it down onto the road.
-	// Internal player_y units: actual_height = player_y >> 8, and on-road means
-	// actual_height == road_height (post-conversion). Larger player_y is higher
-	// in the world (because external_y = -player_y * LOCAL_Y_FACTOR).
-	player.player_y = (height << 8) + (0xc00 * 256 / GameState::LOCAL_Y_FACTOR);
+	// Place car render-space y at the road plus the chain drop offset, so
+	// the chain descent (chain_height_remaining) brings it down onto the
+	// road. Render-space y is negative-up; height is in road_height units
+	// (256-per-render-Y), so /-16 converts to render-space y, and the chain
+	// offset is 48 render-Y units above the road (was 0xc00*256/LOCAL_Y_FACTOR
+	// = 0x30000 in the legacy internal-Y units, /4096 = 48 render-Y).
+	player.player_y = -height / 16.0 - 48.0;
 
 	// clear car x/z angle
 	player.player_x_angle = 0;
@@ -2410,7 +2460,7 @@ static void PositionCarAbovePiece(TrackState& track, GameState& player, int32_t 
 		player.player_y_angle += MAX_ANGLE / 8;
 	}
 
-	player.player_y_angle &= MAX_ANGLE - 1;
+	player.player_y_angle = WrapAngle(player.player_y_angle);
 
 	/*
 	 * Then player.to.side.of.road
@@ -2419,14 +2469,16 @@ static void PositionCarAbovePiece(TrackState& track, GameState& player, int32_t 
 	 *
 	 * This is actually x = 160, z = 0 being rotated about the y axis and then added to the player x and z.
 	 */
-	auto [sin_y, cos_y] = GetSinCos(player.player_y_angle);
-	player.player_x += 160 * static_cast<int32_t>(cos_y);
-	player.player_z -= 160 * static_cast<int32_t>(sin_y);
+	const double ry = player.player_y_angle * ANGLE_TO_RADIANS;
+	const double sin_y = std::sin(ry);
+	const double cos_y = std::cos(ry);
+	player.player_x += 160.0 * cos_y;
+	player.player_z -= 160.0 * sin_y;
 }
 
 int32_t CalculateDisplaySpeed(const GameState& player)
 {
-	int32_t speed = player.player_z_speed;
+	int32_t speed = static_cast<int32_t>(player.player_z_speed);
 	if (speed < 0) speed = 0;
 
 	speed = (speed * 183) >> 15;
@@ -2453,7 +2505,7 @@ static void UpdateEngineRevs(const GameState& player)
 	else
 	{
 		// Touching road
-		c = player.player_z_speed & ~0xf; // zero low four bits
+		c = static_cast<int32_t>(player.player_z_speed) & ~0xf; // zero low four bits
 		if (c < 0) c = -c;
 	}
 
@@ -2623,7 +2675,7 @@ static void DrawSparks(const GameState& game, const SoundState& sound)
 	if (!game.which_side_byte && NOT_WRECKED) return; // if car is not scraping on road and not on an edge
 	if (game.off_map_status != 0) return; // dust clouds will be drawn instead
 
-	int p = abs(game.player_z_speed) >> 8;
+	int p = abs(static_cast<int32_t>(game.player_z_speed)) / 256;
 	if (p < 1) return; // if speed is not large enough
 
 	if (p > 50) p = 50; // set to maximum

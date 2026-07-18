@@ -1,5 +1,7 @@
 // Backdrop.cpp — Draws the sky/ground horizon and distant scenery objects.
 
+#include <algorithm>
+
 #include "platform.h"
 #include "game.h"
 #include "render.software.h"
@@ -115,16 +117,22 @@ void SetSceneryType(const int32_t type)
 
 
 static void DrawHorizon(SoftwareRenderer& r,
-                        int32_t viewpoint_y,
-                        int32_t viewpoint_x_angle,
-                        int32_t viewpoint_z_angle)
+                        double viewpoint_y,
+                        double viewpoint_x_angle,
+                        double viewpoint_z_angle)
 {
 	bool upside_down = false;
 
-	// Two co-ordinates defining the horizon line
-	COORD_3D plane[2] = {
-		{-0x00010000, 0, 0x00010000}, // left
-		{0x00010000, 0, 0x00010000}, // right
+	// Two co-ordinates defining the horizon line — large but finite world
+	// extents so the perspective projection (with the focal length used below)
+	// places the horizon near the visible centre of the screen.
+	struct HorizonPoint
+	{
+		double x, y, z;
+	};
+	HorizonPoint plane[2] = {
+		{-65536.0f, 0.0f, 65536.0f}, // left
+		{65536.0f, 0.0f, 65536.0f}, // right
 	};
 	COORD_2D screen_coords[2];
 
@@ -132,41 +140,46 @@ static void DrawHorizon(SoftwareRenderer& r,
 
 	// Calculate y adjustment depending upon viewpoint_x_angle.
 	// Needed because only two horizon points are used rather than four.
-	// When the rotated z values are negative (viewpoint_x_angle in range shown)
-	// the resulting y values are negated so the y adjustment must also change sign.
-	int32_t y_adjust;
-	if (viewpoint_x_angle >= MAX_ANGLE / 4 &&
-		viewpoint_x_angle < 3 * MAX_ANGLE / 4) // >= 90 and < 270 degrees
-		y_adjust = viewpoint_y >> LOG_PRECISION;
-	else
-		y_adjust = -(viewpoint_y >> LOG_PRECISION);
-
-	y_adjust /= 2; // reduce using PC_FACTOR
+	// When the rotated z values are negative (viewpoint pitched past the zenith
+	// or nadir) the resulting y values are negated so the y adjustment must
+	// also change sign.
+	const bool inverted_pitch =
+		viewpoint_x_angle >= 0.5f * SCR_PI && viewpoint_x_angle < 1.5f * SCR_PI;
+	// viewpoint_y is in render-space world units.
+	double y_adjust = viewpoint_y;
+	if (!inverted_pitch) y_adjust = -y_adjust;
+	y_adjust *= 0.5f; // reduce using PC_FACTOR
 
 	// Rotate two points about x/z axis and perform perspective projection
-	auto [sin_x, cos_x] = GetSinCos(viewpoint_x_angle);
-	auto [sin_z, cos_z] = GetSinCos(viewpoint_z_angle);
+	const double sin_x = std::sin(viewpoint_x_angle);
+	const double cos_x = std::cos(viewpoint_x_angle);
+	const double sin_z = std::sin(viewpoint_z_angle);
+	const double cos_z = std::cos(viewpoint_z_angle);
+	const double focal = std::min(screen_height * 512.f / 480.f, screen_width * 512.f / 640.f);
+
 	for (int32_t i = 0; i < 2; i++)
 	{
-		int32_t x = plane[i].x;
-		int32_t y = plane[i].y + y_adjust;
-		int32_t z = plane[i].z;
+		double x = plane[i].x;
+		double y = plane[i].y + y_adjust;
+		double z = plane[i].z;
 
 		// rotate about x axis
-		const int32_t rot_y = y * cos_x - z * sin_x;
-		const int32_t rot_z = y * sin_x + z * cos_x;
+		const double rot_y_x = y * cos_x - z * sin_x;
+		const double rot_z = y * sin_x + z * cos_x;
 
 		// rotate about z axis
-		y = rot_y >> LOG_PRECISION;
-		const int32_t rot_x = x * cos_z - y * sin_z;
-		const int32_t rot_y2 = x * sin_z + y * cos_z;
+		y = rot_y_x;
+		const double rot_x = x * cos_z - y * sin_z;
+		const double rot_y = x * sin_z + y * cos_z;
 
-		// perspective projection
-		z = static_cast<int32_t>(rot_z / (screen_height * 512.f / 480.f));
-		if (z == 0) z = 1;
+		// perspective projection — focal length tracks the smaller of the
+		// height- and width-based reference scales so wider/taller windows
+		// reveal more world (matching the 3D projection) instead of cropping.
+		double zd = rot_z / focal;
+		if (std::fabs(zd) < 1.0f) zd = (zd < 0.0f) ? -1.0f : 1.0f;
 
-		screen_coords[i].x = rot_x / z + screen_width / 2;
-		screen_coords[i].y = rot_y2 / z + screen_height / 2;
+		screen_coords[i].x = static_cast<int32_t>(rot_x / zd) + screen_width / 2;
+		screen_coords[i].y = static_cast<int32_t>(rot_y / zd) + screen_height / 2;
 	}
 
 	int32_t x1 = screen_coords[0].x;
@@ -522,10 +535,10 @@ static const Scenery scenery_objects[] = {
 // ─── DrawScenery ────────────────────────────────────────────────────────────
 
 static void DrawScenery(SoftwareRenderer& r,
-                        const int32_t viewpoint_y,
-                        const int32_t viewpoint_x_angle,
-                        const int32_t viewpoint_y_angle,
-                        const int32_t viewpoint_z_angle)
+                        const double viewpoint_y,
+                        const double viewpoint_x_angle,
+                        const double viewpoint_y_angle,
+                        const double viewpoint_z_angle)
 {
 	const int32_t* scenery_numbers = scenery_types[current_scenery_type];
 
@@ -535,59 +548,72 @@ static void DrawScenery(SoftwareRenderer& r,
 	auto [screen_width, screen_height] = GetScreenDimensions(r);
 
 	// x/z angles are fixed for all scenery objects
-	auto [sin_x, cos_x] = GetSinCos(viewpoint_x_angle);
-	auto [sin_z, cos_z] = GetSinCos(viewpoint_z_angle);
+	const double sin_x = std::sin(viewpoint_x_angle);
+	const double cos_x = std::cos(viewpoint_x_angle);
+	const double sin_z = std::sin(viewpoint_z_angle);
+	const double cos_z = std::cos(viewpoint_z_angle);
+	const double focal = std::min(screen_height * 512.f / 480.f, screen_width * 512.f / 640.f);
+
+	// Each scenery_positions[] entry is in the original Amiga 0..255 range,
+	// representing a fraction of the full 360-degree circle around the camera.
+	constexpr double kSceneryAngleStep = 2.0f * SCR_PI / 256.0f;
+
+	// Shift scenery vertically with the viewpoint altitude. viewpoint_y is in
+	// render-space world units (positive == below the horizon plane). The /2
+	// matches the original Amiga "reduce using PC_FACTOR" rescale.
+	const double vp_y_offset = viewpoint_y / 2;
 
 	for (int32_t m = 0; m < NUM_SCENERY_OBJECTS; m++)
 	{
 		const int32_t number = scenery_numbers[m];
 		const Scenery& scenery = scenery_objects[number];
 
-		// Calculate y angle for this scenery object
-		int32_t y_angle = viewpoint_y_angle + scenery_positions[m] * 256 & MAX_ANGLE - 1;
-		y_angle = -y_angle & MAX_ANGLE - 1; // reverse y_angle
+		// y angle for this object: viewpoint yaw + per-object azimuth, then
+		// negated to match the original (clockwise) scenery orientation.
+		const double y_angle = -(viewpoint_y_angle + scenery_positions[m] * kSceneryAngleStep);
 
-		auto [sin_y, cos_y] = GetSinCos(y_angle);
+		const double sin_y = std::sin(y_angle);
+		const double cos_y = std::cos(y_angle);
 
-		// Rotate scenery about x/y/z axis and perform perspective projection
+		// Rotate scenery about y/x/z axes and perform perspective projection
 		bool visible = true;
 		for (int32_t i = 0; i < scenery.numCoords; i++)
 		{
-			int32_t x = scenery.coords[i].x * SCENERY_X_Y_SCALE_FACTOR;
-			int32_t y = -(scenery.coords[i].y * SCENERY_X_Y_SCALE_FACTOR);
-			int32_t z = scenery.coords[i].z;
+			double x = scenery.coords[i].x * SCENERY_X_Y_SCALE_FACTOR;
+			double y = -(scenery.coords[i].y * SCENERY_X_Y_SCALE_FACTOR);
+			double z = scenery.coords[i].z;
 
-			y -= (viewpoint_y / 2) >> LOG_PRECISION; // reduce using PC_FACTOR
+			y -= vp_y_offset; // reduce using PC_FACTOR
 			y += 2 * SCENERY_X_Y_SCALE_FACTOR; // prevent sky showing through
 
 			// rotate about y axis
-			int32_t rot_x = x * cos_y + z * sin_y;
-			int32_t rot_z = z * cos_y - x * sin_y;
+			const double rot_x_y = x * cos_y + z * sin_y;
+			const double rot_z_y = z * cos_y - x * sin_y;
 
 			// rotate about x axis
-			z = rot_z >> LOG_PRECISION;
-			int32_t rot_y = y * cos_x - z * sin_x;
-			rot_z = y * sin_x + z * cos_x;
+			z = rot_z_y;
+			const double rot_y_x = y * cos_x - z * sin_x;
+			const double rot_z = y * sin_x + z * cos_x;
 
 			// rotate about z axis
-			x = rot_x >> LOG_PRECISION;
-			y = rot_y >> LOG_PRECISION;
-			rot_x = x * cos_z - y * sin_z;
-			rot_y = x * sin_z + y * cos_z;
+			x = rot_x_y;
+			y = rot_y_x;
+			const double rot_x = x * cos_z - y * sin_z;
+			const double rot_y = x * sin_z + y * cos_z;
 
-			// Skip this object if any z is negative (in front of screen)
-			if (rot_z <= 0)
+			// Skip this object if any z is negative (behind the camera)
+			if (rot_z <= 0.0f)
 			{
 				visible = false;
 				break;
 			}
 
-			// perspective projection
-			z = static_cast<int32_t>(rot_z / (screen_height * 512.f / 480.f));
-			if (z == 0) z = 1;
+			// perspective projection — see DrawHorizon for rationale.
+			const double zd = rot_z / focal;
+			const double inv_z = 1.0f / (zd > 0.0f ? zd : 1.0f);
 
-			screen_coords[i].x = rot_x / z + screen_width / 2;
-			screen_coords[i].y = rot_y / z + screen_height / 2;
+			screen_coords[i].x = static_cast<int32_t>(rot_x * inv_z) + screen_width / 2;
+			screen_coords[i].y = static_cast<int32_t>(rot_y * inv_z) + screen_height / 2;
 		}
 
 		if (!visible)
@@ -619,10 +645,10 @@ static void DrawScenery(SoftwareRenderer& r,
 // ─── DrawBackdrop ───────────────────────────────────────────────────────────
 
 void DrawBackdrop(SoftwareRenderer& r,
-                  const int32_t viewpoint_y,
-                  const int32_t viewpoint_x_angle,
-                  const int32_t viewpoint_y_angle,
-                  const int32_t viewpoint_z_angle)
+                  const double viewpoint_y,
+                  const double viewpoint_x_angle,
+                  const double viewpoint_y_angle,
+                  const double viewpoint_z_angle)
 {
 	DrawHorizon(r, viewpoint_y, viewpoint_x_angle, viewpoint_z_angle);
 	DrawScenery(r, viewpoint_y, viewpoint_x_angle, viewpoint_y_angle, viewpoint_z_angle);

@@ -4,46 +4,29 @@
 // Platform-specific implementation lives in SoftwareRenderer.cpp
 
 #include <cstdint>
-#include <cstdarg>
 
 
 // 3D vector
 struct Vec3
 {
-	float x, y, z;
+	double x, y, z;
 
 	Vec3() : x(0), y(0), z(0)
 	{
 	}
 
-	Vec3(const float _x, const float _y, const float _z) : x(_x), y(_y), z(_z)
+	Vec3(const double _x, const double _y, const double _z) : x(_x), y(_y), z(_z)
 	{
 	}
 
 	Vec3 operator+(const Vec3& v) const { return Vec3(x + v.x, y + v.y, z + v.z); }
 	Vec3 operator-(const Vec3& v) const { return Vec3(x - v.x, y - v.y, z - v.z); }
-	Vec3 operator*(const float s) const { return Vec3(x * s, y * s, z * s); }
+	Vec3 operator*(const double s) const { return Vec3(x * s, y * s, z * s); }
 
-	Vec3 operator/(const float s) const
+	Vec3 operator/(const double s) const
 	{
-		const float inv = 1.0f / s;
+		const double inv = 1.0f / s;
 		return Vec3(x * inv, y * inv, z * inv);
-	}
-
-	Vec3& operator+=(const Vec3& v)
-	{
-		x += v.x;
-		y += v.y;
-		z += v.z;
-		return *this;
-	}
-
-	Vec3& operator-=(const Vec3& v)
-	{
-		x -= v.x;
-		y -= v.y;
-		z -= v.z;
-		return *this;
 	}
 };
 
@@ -52,19 +35,19 @@ inline Vec3 Vec3Cross(const Vec3& a, const Vec3& b)
 	return Vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
 }
 
-inline float Vec3Dot(const Vec3& a, const Vec3& b)
+inline double Vec3Dot(const Vec3& a, const Vec3& b)
 {
 	return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-inline float Vec3Length(const Vec3& v)
+inline double Vec3Length(const Vec3& v)
 {
-	return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+	return sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
 inline Vec3 Vec3Normalize(const Vec3& v)
 {
-	const float len = Vec3Length(v);
+	const double len = Vec3Length(v);
 	if (len < 1e-8f) return Vec3(0, 0, 0);
 	return v / len;
 }
@@ -72,7 +55,7 @@ inline Vec3 Vec3Normalize(const Vec3& v)
 // 4x4 row-major matrix
 struct Mat4
 {
-	float m[4][4];
+	double m[4][4];
 
 	Mat4() { memset(m, 0, sizeof(m)); }
 
@@ -82,17 +65,14 @@ struct Mat4
 		r.m[0][0] = r.m[1][1] = r.m[2][2] = r.m[3][3] = 1.0f;
 		return r;
 	}
-
-	float& operator()(const int row, const int col) { return m[row][col]; }
-	float operator()(const int row, const int col) const { return m[row][col]; }
 };
 
 Mat4 Mat4Multiply(const Mat4& a, const Mat4& b);
-Mat4 Mat4RotationX(float angle);
-Mat4 Mat4RotationY(float angle);
-Mat4 Mat4RotationZ(float angle);
-Mat4 Mat4Translation(float x, float y, float z);
-Mat4 Mat4PerspectiveFovLH(float fovY, float aspect, float zn, float zf);
+Mat4 Mat4RotationX(double angle);
+Mat4 Mat4RotationY(double angle);
+Mat4 Mat4RotationZ(double angle);
+Mat4 Mat4Translation(double x, double y, double z);
+Mat4 Mat4PerspectiveFovLH(double fovY, double aspect, double zn, double zf);
 Mat4 Mat4LookAtLH(const Vec3& eye, const Vec3& at, const Vec3& up);
 
 // Vertex with position, color, and texture coordinates
@@ -100,23 +80,23 @@ struct SWVertex
 {
 	Vec3 pos;
 	uint32_t color;
-	float tu, tv;
+	double tu, tv;
 };
 
 // Screen-space vertex after projection
 struct TransformedVert
 {
-	float x, y, z, w; // screen x,y; z = depth [0,1]; w = 1/w
+	double x, y, z, w; // screen x,y; z = depth [0,1]; w = 1/w
 	uint32_t color;
-	float tu, tv;
+	double tu, tv;
 };
 
 // Homogeneous clip-space vertex for near-plane clipping
 struct ClipSpaceVert
 {
-	float x, y, z, w; // homogeneous clip space
+	double x, y, z, w; // homogeneous clip space
 	uint32_t color;
-	float tu, tv;
+	double tu, tv;
 };
 
 // 2D RGBA texture loaded from BMP resource
@@ -151,14 +131,6 @@ public:
 	void SetViewMatrix(const Mat4& m);
 	void SetProjectionMatrix(const Mat4& m);
 
-	void SetDepthTestEnabled(const bool enabled) { m_depthTest = enabled; }
-	void SetCullMode(const int mode) { m_cullMode = mode; }
-
-	void SetLightingEnabled(const bool enabled) { m_lightingEnabled = enabled; }
-	void SetLightDirection(const Vec3& dir) { m_lightDir = Vec3Normalize(dir); }
-	void SetAmbientIntensity(const float a) { m_ambientIntensity = a; }
-	void SetDiffuseIntensity(const float d) { m_diffuseIntensity = d; }
-
 	void DrawTriangleList(const SWVertex* verts, int startVertex, int numTriangles, const SWTexture* tex);
 	void DrawIndexedTriangleList(const SWVertex* verts, const uint32_t* indices, int startIndex, int numTriangles,
 	                             const SWTexture* tex);
@@ -173,16 +145,10 @@ public:
 	int GetHeight() const { return m_height; }
 	const uint32_t* const GetPixels() const { return m_pixels.data(); }
 
-	// Cull modes
-	static constexpr int CULL_NONE = 0;
-	static constexpr int CULL_CW = 1;
-	static constexpr int CULL_CCW = 2;
-
 private:
 	void CreateBackbuffer(int width, int height);
 	void DestroyBackbuffer();
 
-	TransformedVert TransformVertex(const SWVertex& v);
 	ClipSpaceVert TransformToClipSpace(const SWVertex& v);
 	TransformedVert PerspectiveDivide(const ClipSpaceVert& cv);
 	int ClipTriangleNearPlane(const ClipSpaceVert in[3], ClipSpaceVert out[6]);
@@ -193,14 +159,15 @@ private:
 	void RasterizeTriangle(const TransformedVert& v0, const TransformedVert& v1, const TransformedVert& v2,
 	                       const SWTexture* tex);
 
-	float EdgeFunction(const float ax, const float ay, const float bx, const float by, const float cx, const float cy)
+	double EdgeFunction(const double ax, const double ay, const double bx, const double by, const double cx,
+	                    const double cy)
 	{
 		return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 	}
 
 	// Platform-independent state
 	std::vector<uint32_t> m_pixels;
-	std::vector<float> m_depthBuffer;
+	std::vector<double> m_depthBuffer;
 	int m_width = 0;
 	int m_height;
 
@@ -210,13 +177,17 @@ private:
 	Mat4 m_worldViewProj;
 	bool m_matricesDirty;
 
-	bool m_depthTest = true;
-	int m_cullMode = CULL_NONE;
-
-	bool m_lightingEnabled;
 	Vec3 m_lightDir;
-	float m_ambientIntensity;
-	float m_diffuseIntensity;
+	double m_ambientIntensity;
+	double m_diffuseIntensity;
+
+	// Near-plane clip distance in clip-space w (== view-space z for a standard
+	// perspective projection where the bottom-right of the proj matrix is
+	// [0 0 1 0]). Derived from the projection matrix in SetProjectionMatrix so
+	// that the clipper matches the actual frustum and never produces vertices
+	// with ndcZ < 0 (which would wrongly win every depth test and paint over
+	// closer geometry).
+	double m_nearClipW;
 
 	void UpdateCombinedMatrix();
 };

@@ -25,10 +25,10 @@ Mat4 Mat4Multiply(const Mat4& a, const Mat4& b)
 	return r;
 }
 
-Mat4 Mat4RotationX(const float angle)
+Mat4 Mat4RotationX(const double angle)
 {
 	Mat4 r = Mat4::Identity();
-	const float c = cosf(angle), s = sinf(angle);
+	const double c = cos(angle), s = sin(angle);
 	r.m[1][1] = c;
 	r.m[1][2] = s;
 	r.m[2][1] = -s;
@@ -36,10 +36,10 @@ Mat4 Mat4RotationX(const float angle)
 	return r;
 }
 
-Mat4 Mat4RotationY(const float angle)
+Mat4 Mat4RotationY(const double angle)
 {
 	Mat4 r = Mat4::Identity();
-	const float c = cosf(angle), s = sinf(angle);
+	const double c = cos(angle), s = sin(angle);
 	r.m[0][0] = c;
 	r.m[0][2] = -s;
 	r.m[2][0] = s;
@@ -47,10 +47,10 @@ Mat4 Mat4RotationY(const float angle)
 	return r;
 }
 
-Mat4 Mat4RotationZ(const float angle)
+Mat4 Mat4RotationZ(const double angle)
 {
 	Mat4 r = Mat4::Identity();
-	const float c = cosf(angle), s = sinf(angle);
+	const double c = cos(angle), s = sin(angle);
 	r.m[0][0] = c;
 	r.m[0][1] = s;
 	r.m[1][0] = -s;
@@ -58,7 +58,7 @@ Mat4 Mat4RotationZ(const float angle)
 	return r;
 }
 
-Mat4 Mat4Translation(const float x, const float y, const float z)
+Mat4 Mat4Translation(const double x, const double y, const double z)
 {
 	Mat4 r = Mat4::Identity();
 	r.m[3][0] = x;
@@ -67,16 +67,25 @@ Mat4 Mat4Translation(const float x, const float y, const float z)
 	return r;
 }
 
-Mat4 Mat4PerspectiveFovLH(const float fovY, const float aspect, const float zn, const float zf)
+Mat4 Mat4PerspectiveFovLH(const double fovY, const double aspect, const double zn, const double zf)
 {
+	// Reversed-Z left-handed perspective.
+	//
+	// Maps view-space z = zn -> ndcZ = 1, view-space z = zf -> ndcZ = 0. Combined
+	// with a depth buffer cleared to 0 and a `z > depthBuf` test, this distributes
+	// double depth precision much more uniformly across the frustum than the standard
+	// near=0/far=1 mapping. With huge near/far ratios (this game uses 0.5 / 131072),
+	// the standard mapping crushes everything past view-z ~= 1000 into the last few
+	// ULPs of double, which is what causes far track triangles to win the depth test
+	// over closer ones at random.
 	Mat4 r;
-	const float yScale = 1.0f / tanf(fovY / 2.0f);
-	const float xScale = yScale / aspect;
+	const double yScale = 1.0 / tan(fovY / 2.0);
+	const double xScale = yScale / aspect;
 	r.m[0][0] = xScale;
 	r.m[1][1] = yScale;
-	r.m[2][2] = zf / (zf - zn);
+	r.m[2][2] = zn / (zn - zf); // negative
 	r.m[2][3] = 1.0f;
-	r.m[3][2] = -zn * zf / (zf - zn);
+	r.m[3][2] = zn * zf / (zf - zn); // positive
 	return r;
 }
 
@@ -109,9 +118,10 @@ Mat4 Mat4LookAtLH(const Vec3& eye, const Vec3& at, const Vec3& up)
 
 SoftwareRenderer::SoftwareRenderer()
 	: m_width(0), m_height(0),
-	  m_matricesDirty(true), m_depthTest(true), m_cullMode(CULL_NONE),
-	  m_lightingEnabled(false), m_lightDir(Vec3Normalize(Vec3(0.3f, 0.8f, 0.5f))),
-	  m_ambientIntensity(0.45f), m_diffuseIntensity(0.55f)
+	  m_matricesDirty(true),
+	  m_lightDir(Vec3Normalize(Vec3(0.3f, 0.8f, 0.5f))),
+	  m_ambientIntensity(0.45f), m_diffuseIntensity(0.55f),
+	  m_nearClipW(0.01f)
 {
 	m_world = Mat4::Identity();
 	m_view = Mat4::Identity();
@@ -158,7 +168,8 @@ void SoftwareRenderer::Clear(const uint32_t color)
 
 void SoftwareRenderer::ClearDepth()
 {
-	std::fill(m_depthBuffer.begin(), m_depthBuffer.end(), 1.0f);
+	// Reversed-Z: far plane = 0, near plane = 1. Clear to the far value.
+	std::fill(m_depthBuffer.begin(), m_depthBuffer.end(), 0.0f);
 }
 
 void SoftwareRenderer::SetWorldMatrix(const Mat4& m)
@@ -177,6 +188,27 @@ void SoftwareRenderer::SetProjectionMatrix(const Mat4& m)
 {
 	m_proj = m;
 	m_matricesDirty = true;
+
+	// Recover the projection's near plane (zn) from the matrix so the near-plane
+	// clipper matches the actual frustum. Works for both standard and reversed-Z
+	// LH perspective matrices: solve view-z at ndcZ = 0 and at ndcZ = 1, take the
+	// smaller one (that is the near plane in either convention).
+	//   ndcZ = m22 + m32 / z   (since w = z for these projections)
+	//   ndcZ = 0  =>  z = -m32 / m22
+	//   ndcZ = 1  =>  z =  m32 / (1 - m22)
+	// Clip-space w equals view-space z for this projection (m[2][3]=1, m[3][3]=0),
+	// so we clip against w >= zn directly. Bias slightly above zn to avoid producing
+	// vertices with ndcZ exactly at the near boundary / a divide that's numerically
+	// fragile.
+	const double m22 = m.m[2][2];
+	const double m32 = m.m[3][2];
+	if (fabs(m22) > 1e-12f && fabs(1.0 - m22) > 1e-12)
+	{
+		const double zAtNdc0 = -m32 / m22;
+		const double zAtNdc1 = m32 / (1.0f - m22);
+		const double zn = (zAtNdc0 < zAtNdc1) ? zAtNdc0 : zAtNdc1;
+		m_nearClipW = zn > 0.0f ? zn * 1.001f : 0.01f;
+	}
 }
 
 void SoftwareRenderer::UpdateCombinedMatrix()
@@ -189,48 +221,7 @@ void SoftwareRenderer::UpdateCombinedMatrix()
 	}
 }
 
-TransformedVert SoftwareRenderer::TransformVertex(const SWVertex& v)
-{
-	UpdateCombinedMatrix();
-
-	const float x = v.pos.x, y = v.pos.y, z = v.pos.z;
-
-	// Transform and project to screen space
-	const float tx = x * m_worldViewProj.m[0][0] + y * m_worldViewProj.m[1][0] + z * m_worldViewProj.m[2][0] +
-		m_worldViewProj
-		.m[3][0];
-	const float ty = x * m_worldViewProj.m[0][1] + y * m_worldViewProj.m[1][1] + z * m_worldViewProj.m[2][1] +
-		m_worldViewProj
-		.m[3][1];
-	const float tz = x * m_worldViewProj.m[0][2] + y * m_worldViewProj.m[1][2] + z * m_worldViewProj.m[2][2] +
-		m_worldViewProj
-		.m[3][2];
-	float tw = x * m_worldViewProj.m[0][3] + y * m_worldViewProj.m[1][3] + z * m_worldViewProj.m[2][3] + m_worldViewProj
-		.m[3][3];
-
-	TransformedVert tv;
-	if (fabsf(tw) < 1e-10f) tw = 1e-10f;
-
-	const float invW = 1.0f / tw;
-	const float ndcX = tx * invW;
-	const float ndcY = ty * invW;
-	const float ndcZ = tz * invW;
-
-	// Viewport transform (full screen)
-	tv.x = (ndcX + 1.0f) * 0.5f * m_width;
-	tv.y = (1.0f - ndcY) * 0.5f * m_height;
-	tv.z = ndcZ;
-	tv.w = invW;
-	tv.color = v.color;
-	tv.tu = v.tu;
-	tv.tv = v.tv;
-
-	return tv;
-}
-
-static constexpr float NEAR_CLIP_W = 0.01f;
-
-static ClipSpaceVert LerpClipVert(const ClipSpaceVert& a, const ClipSpaceVert& b, const float t)
+static ClipSpaceVert LerpClipVert(const ClipSpaceVert& a, const ClipSpaceVert& b, const double t)
 {
 	ClipSpaceVert r;
 	r.x = a.x + (b.x - a.x) * t;
@@ -251,7 +242,7 @@ static ClipSpaceVert LerpClipVert(const ClipSpaceVert& a, const ClipSpaceVert& b
 ClipSpaceVert SoftwareRenderer::TransformToClipSpace(const SWVertex& v)
 {
 	UpdateCombinedMatrix();
-	const float x = v.pos.x, y = v.pos.y, z = v.pos.z;
+	const double x = v.pos.x, y = v.pos.y, z = v.pos.z;
 	ClipSpaceVert cv;
 	cv.x = x * m_worldViewProj.m[0][0] + y * m_worldViewProj.m[1][0] + z * m_worldViewProj.m[2][0] + m_worldViewProj.m[
 		3][0];
@@ -270,14 +261,14 @@ ClipSpaceVert SoftwareRenderer::TransformToClipSpace(const SWVertex& v)
 TransformedVert SoftwareRenderer::PerspectiveDivide(const ClipSpaceVert& cv)
 {
 	TransformedVert tv;
-	float w = cv.w;
-	if (fabsf(w) < 1e-10f) w = 1e-10f;
-	const float invW = 1.0f / w;
-	const float ndcX = cv.x * invW;
-	const float ndcY = cv.y * invW;
-	const float ndcZ = cv.z * invW;
-	tv.x = (ndcX + 1.0f) * 0.5f * m_width;
-	tv.y = (1.0f - ndcY) * 0.5f * m_height;
+	double w = cv.w;
+	if (fabs(w) < 1e-10) w = 1e-10;
+	const double invW = 1.0 / w;
+	const double ndcX = cv.x * invW;
+	const double ndcY = cv.y * invW;
+	const double ndcZ = cv.z * invW;
+	tv.x = (ndcX + 1.0f) * 0.5 * m_width;
+	tv.y = (1.0 - ndcY) * 0.5 * m_height;
 	tv.z = ndcZ;
 	tv.w = invW;
 	tv.color = cv.color;
@@ -288,7 +279,11 @@ TransformedVert SoftwareRenderer::PerspectiveDivide(const ClipSpaceVert& cv)
 
 int SoftwareRenderer::ClipTriangleNearPlane(const ClipSpaceVert in[3], ClipSpaceVert out[6])
 {
-	// Sutherland-Hodgman clip against w >= NEAR_CLIP_W (near plane)
+	// Sutherland-Hodgman clip against w >= m_nearClipW (near plane).
+	// m_nearClipW is derived from the projection matrix so that survivors of
+	// this clip never produce ndcZ < 0 (which would otherwise win every depth
+	// test and paint over closer geometry).
+	const double nearW = m_nearClipW;
 	ClipSpaceVert poly[6];
 	int numVerts = 0;
 
@@ -296,21 +291,21 @@ int SoftwareRenderer::ClipTriangleNearPlane(const ClipSpaceVert in[3], ClipSpace
 	{
 		const ClipSpaceVert& curr = in[i];
 		const ClipSpaceVert& next = in[(i + 1) % 3];
-		const bool currInside = curr.w >= NEAR_CLIP_W;
-		const bool nextInside = next.w >= NEAR_CLIP_W;
+		const bool currInside = curr.w >= nearW;
+		const bool nextInside = next.w >= nearW;
 
 		if (currInside)
 		{
 			poly[numVerts++] = curr;
 			if (!nextInside)
 			{
-				const float t = (NEAR_CLIP_W - curr.w) / (next.w - curr.w);
+				const double t = (nearW - curr.w) / (next.w - curr.w);
 				poly[numVerts++] = LerpClipVert(curr, next, t);
 			}
 		}
 		else if (nextInside)
 		{
-			const float t = (NEAR_CLIP_W - curr.w) / (next.w - curr.w);
+			const double t = (nearW - curr.w) / (next.w - curr.w);
 			poly[numVerts++] = LerpClipVert(curr, next, t);
 		}
 	}
@@ -330,10 +325,12 @@ int SoftwareRenderer::ClipTriangleNearPlane(const ClipSpaceVert in[3], ClipSpace
 void SoftwareRenderer::ProcessAndRasterizeTriangle(const ClipSpaceVert& cv0, const ClipSpaceVert& cv1,
                                                    const ClipSpaceVert& cv2, const SWTexture* tex)
 {
-	// All vertices behind camera - skip entirely
-	if (cv0.w < NEAR_CLIP_W && cv1.w < NEAR_CLIP_W && cv2.w < NEAR_CLIP_W) return;
+	const double nearW = m_nearClipW;
 
-	const bool needsClip = cv0.w < NEAR_CLIP_W || cv1.w < NEAR_CLIP_W || cv2.w < NEAR_CLIP_W;
+	// All vertices behind camera - skip entirely
+	if (cv0.w < nearW && cv1.w < nearW && cv2.w < nearW) return;
+
+	const bool needsClip = cv0.w < nearW || cv1.w < nearW || cv2.w < nearW;
 
 	if (needsClip)
 	{
@@ -347,15 +344,15 @@ void SoftwareRenderer::ProcessAndRasterizeTriangle(const ClipSpaceVert& cv0, con
 			TransformedVert tv1 = PerspectiveDivide(clipped[t * 3 + 1]);
 			TransformedVert tv2 = PerspectiveDivide(clipped[t * 3 + 2]);
 
-			if (tv0.z > 1 && tv1.z > 1 && tv2.z > 1) continue;
+			// Reversed-Z: past-far means ndcZ < 0. (Past-near is impossible after w-clip.)
+			if (tv0.z < 0 && tv1.z < 0 && tv2.z < 0) continue;
 
-			if (m_cullMode != CULL_NONE)
-			{
-				const float cross = (tv1.x - tv0.x) * (tv2.y - tv0.y) - (tv1.y - tv0.y) * (tv2.x - tv0.x);
-				if (m_cullMode == CULL_CCW && cross < 0) continue;
-				if (m_cullMode == CULL_CW && cross > 0) continue;
-			}
-
+			// No back-face culling: the track is single-sided, so culling caused
+			// the road to vanish whenever the eye crossed below the surface
+			// (banked turns, hill crests, hard landings). The rasterizer handles
+			// both windings correctly via signed area; back-facing triangles
+			// shade as ambient-only (N.L clamped at 0 in ApplyFaceLighting),
+			// which is acceptable for the rare cases this matters.
 			RasterizeTriangle(tv0, tv1, tv2, tex);
 		}
 	}
@@ -365,34 +362,18 @@ void SoftwareRenderer::ProcessAndRasterizeTriangle(const ClipSpaceVert& cv0, con
 		const TransformedVert tv1 = PerspectiveDivide(cv1);
 		const TransformedVert tv2 = PerspectiveDivide(cv2);
 
-		if (tv0.z > 1 && tv1.z > 1 && tv2.z > 1) return;
-
-		if (m_cullMode != CULL_NONE)
-		{
-			const float cross = (tv1.x - tv0.x) * (tv2.y - tv0.y) - (tv1.y - tv0.y) * (tv2.x - tv0.x);
-			if (m_cullMode == CULL_CCW && cross < 0) return;
-			if (m_cullMode == CULL_CW && cross > 0) return;
-		}
+		// Reversed-Z: past-far means ndcZ < 0.
+		if (tv0.z < 0 && tv1.z < 0 && tv2.z < 0) return;
 
 		RasterizeTriangle(tv0, tv1, tv2, tex);
 	}
 }
 
-static inline uint32_t LerpColor(const uint32_t c1, const uint32_t c2, const float t)
-{
-	const int r1 = c1 >> 16 & 0xFF, g1 = c1 >> 8 & 0xFF, b1 = c1 & 0xFF;
-	const int r2 = c2 >> 16 & 0xFF, g2 = c2 >> 8 & 0xFF, b2 = c2 & 0xFF;
-	const int r = r1 + static_cast<int>((r2 - r1) * t);
-	const int g = g1 + static_cast<int>((g2 - g1) * t);
-	const int b = b1 + static_cast<int>((b2 - b1) * t);
-	return XRGB(r, g, b);
-}
-
-static inline uint32_t SampleTexture(const SWTexture& tex, float u, float v)
+static inline uint32_t SampleTexture(const SWTexture& tex, double u, double v)
 {
 	if (tex.pixels.empty()) return 0xFFFFFF;
-	u = u - floorf(u);
-	v = v - floorf(v);
+	u = u - floor(u);
+	v = v - floor(v);
 	int tx = static_cast<int>(u * tex.width) % tex.width;
 	int ty = static_cast<int>(v * tex.height) % tex.height;
 	if (tx < 0) tx += tex.width;
@@ -404,27 +385,27 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
                                          const TransformedVert& v2, const SWTexture* tex)
 {
 	// Bounding box clipped to screen
-	float minX = (std::min)({v0.x, v1.x, v2.x});
-	float maxX = (std::max)({v0.x, v1.x, v2.x});
-	float minY = (std::min)({v0.y, v1.y, v2.y});
-	float maxY = (std::max)({v0.y, v1.y, v2.y});
+	double minX = (std::min)({v0.x, v1.x, v2.x});
+	double maxX = (std::max)({v0.x, v1.x, v2.x});
+	double minY = (std::min)({v0.y, v1.y, v2.y});
+	double maxY = (std::max)({v0.y, v1.y, v2.y});
 
-	int iMinX = (std::max)(0, static_cast<int>(floorf(minX)));
-	int iMaxX = (std::min)(m_width - 1, static_cast<int>(ceilf(maxX)));
-	int iMinY = (std::max)(0, static_cast<int>(floorf(minY)));
-	int iMaxY = (std::min)(m_height - 1, static_cast<int>(ceilf(maxY)));
+	int iMinX = (std::max)(0, static_cast<int>(floor(minX)));
+	int iMaxX = (std::min)(m_width - 1, static_cast<int>(ceil(maxX)));
+	int iMinY = (std::max)(0, static_cast<int>(floor(minY)));
+	int iMaxY = (std::min)(m_height - 1, static_cast<int>(ceil(maxY)));
 
 	if (iMinX > iMaxX || iMinY > iMaxY) return;
 
-	float area = EdgeFunction(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
-	if (fabsf(area) < 1e-4f) return;
-	float invArea = 1.0f / area;
+	double area = EdgeFunction(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
+	if (fabs(area) < 1e-4) return;
+	double invArea = 1.0 / area;
 
 	// Edge function per-pixel increments (additions replace per-pixel multiplications)
 	// w0 = EdgeFunction(v1, v2, P)  ->  dw0/dx = v1.y - v2.y,  dw0/dy = v2.x - v1.x
-	float stepX0 = v1.y - v2.y, stepY0 = v2.x - v1.x;
-	float stepX1 = v2.y - v0.y, stepY1 = v0.x - v2.x;
-	float stepX2 = v0.y - v1.y, stepY2 = v1.x - v0.x;
+	double stepX0 = v1.y - v2.y, stepY0 = v2.x - v1.x;
+	double stepX1 = v2.y - v0.y, stepY1 = v0.x - v2.x;
+	double stepX2 = v0.y - v1.y, stepY2 = v1.x - v0.x;
 
 	// Normalize sign so inside test is always w >= 0
 	const bool negArea = area < 0;
@@ -444,23 +425,32 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 	//   - left edge:  goes downward (dy > 0)
 	// where (dx, dy) is the edge vector from start to end vertex (after sign-normalization
 	// so winding is CCW). Edge i is opposite vertex i, going from v[(i+1)%3] to v[(i+2)%3].
-	auto topLeftBias = [negArea](const float vax, const float vay, const float vbx, const float vby) -> float
+	//
+	// The bias must be large enough to survive floating-point rounding when added to the
+	// initial row edge value (which can reach ~1e5-1e6 for full-screen triangles, where a
+	// double ULP is ~0.06-0.25). A tiny bias like 1/65536 is silently rounded away, leaving
+	// adjacent triangles to double-cover shared edges and producing depth-tie flicker.
+	// 1/16 (sub-pixel-precision unit) is well above FP noise and well below any non-
+	// degenerate per-pixel step, so it cleanly excludes shared edges without losing
+	// genuine coverage.
+	constexpr double FILL_RULE_BIAS = -1.0f / 16.0f;
+	auto topLeftBias = [negArea](const double vax, const double vay, const double vbx, const double vby) -> double
 	{
-		const float dx = negArea ? vax - vbx : vbx - vax;
-		const float dy = negArea ? vay - vby : vby - vay;
+		const double dx = negArea ? vax - vbx : vbx - vax;
+		const double dy = negArea ? vay - vby : vby - vay;
 		const bool topLeft = (dy == 0.0f && dx < 0.0f) || dy > 0.0f;
-		return topLeft ? 0.0f : -1.0f / 65536.0f;
+		return topLeft ? 0.0f : FILL_RULE_BIAS;
 	};
-	const float bias0 = topLeftBias(v1.x, v1.y, v2.x, v2.y);
-	const float bias1 = topLeftBias(v2.x, v2.y, v0.x, v0.y);
-	const float bias2 = topLeftBias(v0.x, v0.y, v1.x, v1.y);
+	const double bias0 = topLeftBias(v1.x, v1.y, v2.x, v2.y);
+	const double bias1 = topLeftBias(v2.x, v2.y, v0.x, v0.y);
+	const double bias2 = topLeftBias(v0.x, v0.y, v1.x, v1.y);
 
 	// Edge values at top-left pixel center
-	const float pxStart = iMinX + 0.5f;
-	const float pyStart = iMinY + 0.5f;
-	float rowW0 = EdgeFunction(v1.x, v1.y, v2.x, v2.y, pxStart, pyStart);
-	float rowW1 = EdgeFunction(v2.x, v2.y, v0.x, v0.y, pxStart, pyStart);
-	float rowW2 = EdgeFunction(v0.x, v0.y, v1.x, v1.y, pxStart, pyStart);
+	const double pxStart = iMinX + 0.5f;
+	const double pyStart = iMinY + 0.5f;
+	double rowW0 = EdgeFunction(v1.x, v1.y, v2.x, v2.y, pxStart, pyStart);
+	double rowW1 = EdgeFunction(v2.x, v2.y, v0.x, v0.y, pxStart, pyStart);
+	double rowW2 = EdgeFunction(v0.x, v0.y, v1.x, v1.y, pxStart, pyStart);
 	if (negArea)
 	{
 		rowW0 = -rowW0;
@@ -472,16 +462,15 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 	rowW2 += bias2;
 
 	// Pre-compute per-pixel attribute increments (one-time cost per triangle)
-	float zStepX = (stepX0 * v0.z + stepX1 * v1.z + stepX2 * v2.z) * invArea;
-	float zStepY = (stepY0 * v0.z + stepY1 * v1.z + stepY2 * v2.z) * invArea;
-	float bary0 = rowW0 * invArea, bary1 = rowW1 * invArea, bary2 = rowW2 * invArea;
-	float zRow = bary0 * v0.z + bary1 * v1.z + bary2 * v2.z;
+	double zStepX = (stepX0 * v0.z + stepX1 * v1.z + stepX2 * v2.z) * invArea;
+	double zStepY = (stepY0 * v0.z + stepY1 * v1.z + stepY2 * v2.z) * invArea;
+	double bary0 = rowW0 * invArea, bary1 = rowW1 * invArea, bary2 = rowW2 * invArea;
+	double zRow = bary0 * v0.z + bary1 * v1.z + bary2 * v2.z;
 
 	// Hoist member fields into local __restrict pointers for the inner loop
 	uint32_t* __restrict pixels = m_pixels.data();
-	float* __restrict depthBuf = m_depthBuffer.data();
+	double* __restrict depthBuf = m_depthBuffer.data();
 	const int scanWidth = m_width;
-	const bool depthTest = m_depthTest;
 
 	// Branch on rendering mode OUTSIDE the scanline loops
 	if (tex)
@@ -489,24 +478,24 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 		// Perspective-correct texturing: interpolate u/w, v/w, 1/w linearly in screen
 		// space, then divide per-pixel. v0.w/v1.w/v2.w already hold 1/w from the
 		// perspective divide.
-		const float u0 = v0.tu * v0.w, u1 = v1.tu * v1.w, u2 = v2.tu * v2.w;
-		const float vv0 = v0.tv * v0.w, vv1 = v1.tv * v1.w, vv2 = v2.tv * v2.w;
-		const float iw0 = v0.w, iw1 = v1.w, iw2 = v2.w;
+		const double u0 = v0.tu * v0.w, u1 = v1.tu * v1.w, u2 = v2.tu * v2.w;
+		const double vv0 = v0.tv * v0.w, vv1 = v1.tv * v1.w, vv2 = v2.tv * v2.w;
+		const double iw0 = v0.w, iw1 = v1.w, iw2 = v2.w;
 
-		const float uStepX = (stepX0 * u0 + stepX1 * u1 + stepX2 * u2) * invArea;
-		const float uStepY = (stepY0 * u0 + stepY1 * u1 + stepY2 * u2) * invArea;
-		const float vStepX = (stepX0 * vv0 + stepX1 * vv1 + stepX2 * vv2) * invArea;
-		const float vStepY = (stepY0 * vv0 + stepY1 * vv1 + stepY2 * vv2) * invArea;
-		const float iwStepX = (stepX0 * iw0 + stepX1 * iw1 + stepX2 * iw2) * invArea;
-		const float iwStepY = (stepY0 * iw0 + stepY1 * iw1 + stepY2 * iw2) * invArea;
-		float uRow = bary0 * u0 + bary1 * u1 + bary2 * u2;
-		float vRow = bary0 * vv0 + bary1 * vv1 + bary2 * vv2;
-		float iwRow = bary0 * iw0 + bary1 * iw1 + bary2 * iw2;
+		const double uStepX = (stepX0 * u0 + stepX1 * u1 + stepX2 * u2) * invArea;
+		const double uStepY = (stepY0 * u0 + stepY1 * u1 + stepY2 * u2) * invArea;
+		const double vStepX = (stepX0 * vv0 + stepX1 * vv1 + stepX2 * vv2) * invArea;
+		const double vStepY = (stepY0 * vv0 + stepY1 * vv1 + stepY2 * vv2) * invArea;
+		const double iwStepX = (stepX0 * iw0 + stepX1 * iw1 + stepX2 * iw2) * invArea;
+		const double iwStepY = (stepY0 * iw0 + stepY1 * iw1 + stepY2 * iw2) * invArea;
+		double uRow = bary0 * u0 + bary1 * u1 + bary2 * u2;
+		double vRow = bary0 * vv0 + bary1 * vv1 + bary2 * vv2;
+		double iwRow = bary0 * iw0 + bary1 * iw1 + bary2 * iw2;
 
 		for (int py = iMinY; py <= iMaxY; py++)
 		{
-			float w0 = rowW0, w1 = rowW1, w2 = rowW2;
-			float z = zRow, u = uRow, v = vRow, iw = iwRow;
+			double w0 = rowW0, w1 = rowW1, w2 = rowW2;
+			double z = zRow, u = uRow, v = vRow, iw = iwRow;
 			const int rowOff = py * scanWidth;
 
 			for (int px = iMinX; px <= iMaxX; px++)
@@ -514,10 +503,10 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 				if (w0 >= 0 && w1 >= 0 && w2 >= 0)
 				{
 					const int idx = rowOff + px;
-					if (!depthTest || z < depthBuf[idx])
+					if (z > depthBuf[idx])
 					{
-						if (depthTest) depthBuf[idx] = z;
-						const float w = iw != 0.0f ? 1.0f / iw : 0.0f;
+						depthBuf[idx] = z;
+						const double w = iw != 0.0f ? 1.0f / iw : 0.0f;
 						pixels[idx] = ColorToDIB(SampleTexture(*tex, u * w, v * w));
 					}
 				}
@@ -545,20 +534,20 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 		int r1 = v1.color >> 16 & 0xFF, g1 = v1.color >> 8 & 0xFF, b1 = v1.color & 0xFF;
 		int r2 = v2.color >> 16 & 0xFF, g2 = v2.color >> 8 & 0xFF, b2 = v2.color & 0xFF;
 
-		float rStepX = (stepX0 * r0 + stepX1 * r1 + stepX2 * r2) * invArea;
-		float gStepX = (stepX0 * g0 + stepX1 * g1 + stepX2 * g2) * invArea;
-		float bStepX = (stepX0 * b0 + stepX1 * b1 + stepX2 * b2) * invArea;
-		float rStepY = (stepY0 * r0 + stepY1 * r1 + stepY2 * r2) * invArea;
-		float gStepY = (stepY0 * g0 + stepY1 * g1 + stepY2 * g2) * invArea;
-		float bStepY = (stepY0 * b0 + stepY1 * b1 + stepY2 * b2) * invArea;
-		float rRow = bary0 * r0 + bary1 * r1 + bary2 * r2;
-		float gRow = bary0 * g0 + bary1 * g1 + bary2 * g2;
-		float bRow = bary0 * b0 + bary1 * b1 + bary2 * b2;
+		double rStepX = (stepX0 * r0 + stepX1 * r1 + stepX2 * r2) * invArea;
+		double gStepX = (stepX0 * g0 + stepX1 * g1 + stepX2 * g2) * invArea;
+		double bStepX = (stepX0 * b0 + stepX1 * b1 + stepX2 * b2) * invArea;
+		double rStepY = (stepY0 * r0 + stepY1 * r1 + stepY2 * r2) * invArea;
+		double gStepY = (stepY0 * g0 + stepY1 * g1 + stepY2 * g2) * invArea;
+		double bStepY = (stepY0 * b0 + stepY1 * b1 + stepY2 * b2) * invArea;
+		double rRow = bary0 * r0 + bary1 * r1 + bary2 * r2;
+		double gRow = bary0 * g0 + bary1 * g1 + bary2 * g2;
+		double bRow = bary0 * b0 + bary1 * b1 + bary2 * b2;
 
 		for (int py = iMinY; py <= iMaxY; py++)
 		{
-			float w0 = rowW0, w1 = rowW1, w2 = rowW2;
-			float z = zRow, rf = rRow, gf = gRow, bf = bRow;
+			double w0 = rowW0, w1 = rowW1, w2 = rowW2;
+			double z = zRow, rf = rRow, gf = gRow, bf = bRow;
 			const int rowOff = py * scanWidth;
 
 			for (int px = iMinX; px <= iMaxX; px++)
@@ -566,9 +555,9 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 				if (w0 >= 0 && w1 >= 0 && w2 >= 0)
 				{
 					const int idx = rowOff + px;
-					if (!depthTest || z < depthBuf[idx])
+					if (z > depthBuf[idx])
 					{
-						if (depthTest) depthBuf[idx] = z;
+						depthBuf[idx] = z;
 						int ri = (std::min)(255, (std::max)(0, static_cast<int>(rf)));
 						int gi = (std::min)(255, (std::max)(0, static_cast<int>(gf)));
 						int bi = (std::min)(255, (std::max)(0, static_cast<int>(bf)));
@@ -602,7 +591,7 @@ void SoftwareRenderer::ApplyFaceLighting(const Vec3& p0, const Vec3& p1, const V
 	const Vec3 edge1 = p1 - p0;
 	const Vec3 edge2 = p2 - p0;
 	Vec3 n = Vec3Cross(edge1, edge2);
-	const float len = Vec3Length(n);
+	const double len = Vec3Length(n);
 	if (len < 1e-8f) return; // degenerate triangle
 	n = n / len;
 
@@ -614,9 +603,9 @@ void SoftwareRenderer::ApplyFaceLighting(const Vec3& p0, const Vec3& p1, const V
 	wn = Vec3Normalize(wn);
 
 	// N dot L
-	float NdotL = Vec3Dot(wn, m_lightDir);
+	double NdotL = Vec3Dot(wn, m_lightDir);
 	if (NdotL < 0.0f) NdotL = 0.0f;
-	float intensity = m_ambientIntensity + m_diffuseIntensity * NdotL;
+	double intensity = m_ambientIntensity + m_diffuseIntensity * NdotL;
 	if (intensity > 1.0f) intensity = 1.0f;
 
 	// Scale vertex colors (clamp to [0,255] to avoid bleeding into adjacent channels)
@@ -648,8 +637,7 @@ void SoftwareRenderer::DrawTriangleList(const SWVertex* verts, const int startVe
 		ClipSpaceVert cv1 = TransformToClipSpace(verts[base + 1]);
 		ClipSpaceVert cv2 = TransformToClipSpace(verts[base + 2]);
 
-		if (m_lightingEnabled)
-			ApplyFaceLighting(verts[base + 0].pos, verts[base + 1].pos, verts[base + 2].pos, cv0, cv1, cv2);
+		ApplyFaceLighting(verts[base + 0].pos, verts[base + 1].pos, verts[base + 2].pos, cv0, cv1, cv2);
 
 		ProcessAndRasterizeTriangle(cv0, cv1, cv2, tex);
 	}
@@ -668,8 +656,7 @@ void SoftwareRenderer::DrawIndexedTriangleList(const SWVertex* verts, const uint
 		ClipSpaceVert cv1 = TransformToClipSpace(sv1);
 		ClipSpaceVert cv2 = TransformToClipSpace(sv2);
 
-		if (m_lightingEnabled)
-			ApplyFaceLighting(sv0.pos, sv1.pos, sv2.pos, cv0, cv1, cv2);
+		ApplyFaceLighting(sv0.pos, sv1.pos, sv2.pos, cv0, cv1, cv2);
 
 		ProcessAndRasterizeTriangle(cv0, cv1, cv2, tex);
 	}
@@ -685,27 +672,27 @@ void SoftwareRenderer::DrawScreenTriangleFan(const Point2D* pts, const int numPo
 
 	for (int i = 1; i < numPoints - 1; i++)
 	{
-		float x0 = static_cast<float>(pts[0].x), y0 = static_cast<float>(pts[0].y);
-		float x1 = static_cast<float>(pts[i].x), y1 = static_cast<float>(pts[i].y);
-		float x2 = static_cast<float>(pts[i + 1].x), y2 = static_cast<float>(pts[i + 1].y);
+		double x0 = pts[0].x, y0 = pts[0].y;
+		double x1 = pts[i].x, y1 = pts[i].y;
+		double x2 = pts[i + 1].x, y2 = pts[i + 1].y;
 
-		const float fminX = (std::min)({x0, x1, x2});
-		const float fmaxX = (std::max)({x0, x1, x2});
-		const float fminY = (std::min)({y0, y1, y2});
-		const float fmaxY = (std::max)({y0, y1, y2});
+		const double fminX = (std::min)({x0, x1, x2});
+		const double fmaxX = (std::max)({x0, x1, x2});
+		const double fminY = (std::min)({y0, y1, y2});
+		const double fmaxY = (std::max)({y0, y1, y2});
 
-		const int iMinX = (std::max)(0, static_cast<int>(floorf(fminX)));
-		const int iMaxX = (std::min)(m_width - 1, static_cast<int>(ceilf(fmaxX)));
-		const int iMinY = (std::max)(0, static_cast<int>(floorf(fminY)));
-		const int iMaxY = (std::min)(m_height - 1, static_cast<int>(ceilf(fmaxY)));
+		const int iMinX = (std::max)(0, static_cast<int>(floor(fminX)));
+		const int iMaxX = (std::min)(m_width - 1, static_cast<int>(ceil(fmaxX)));
+		const int iMinY = (std::max)(0, static_cast<int>(floor(fminY)));
+		const int iMaxY = (std::min)(m_height - 1, static_cast<int>(ceil(fmaxY)));
 
-		const float area = EdgeFunction(x0, y0, x1, y1, x2, y2);
-		if (fabsf(area) < 1e-4f) continue;
+		const double area = EdgeFunction(x0, y0, x1, y1, x2, y2);
+		if (fabs(area) < 1e-4f) continue;
 
 		// Incremental edge function steps
-		float stepX0 = y1 - y2, stepY0 = x2 - x1;
-		float stepX1 = y2 - y0, stepY1 = x0 - x2;
-		float stepX2 = y0 - y1, stepY2 = x1 - x0;
+		double stepX0 = y1 - y2, stepY0 = x2 - x1;
+		double stepX1 = y2 - y0, stepY1 = x0 - x2;
+		double stepX2 = y0 - y1, stepY2 = x1 - x0;
 
 		const bool negArea = area < 0;
 		if (negArea)
@@ -718,23 +705,26 @@ void SoftwareRenderer::DrawScreenTriangleFan(const Point2D* pts, const int numPo
 			stepY2 = -stepY2;
 		}
 
-		// Top-left fill rule bias to prevent double-cover and shared-edge gaps.
-		auto topLeftBias = [negArea](const float vax, const float vay,
-		                             const float vbx, const float vby) -> float
+		// Top-left fill rule bias to prevent double-cover and shared-edge gaps. See the
+		// matching comment in RasterizeTriangle for why 1/16 is the right magnitude here
+		// rather than 1/65536 (which is silently rounded away in double arithmetic).
+		constexpr double FILL_RULE_BIAS = -1.0f / 16.0f;
+		auto topLeftBias = [negArea](const double vax, const double vay,
+		                             const double vbx, const double vby) -> double
 		{
-			const float dx = negArea ? vax - vbx : vbx - vax;
-			const float dy = negArea ? vay - vby : vby - vay;
+			const double dx = negArea ? vax - vbx : vbx - vax;
+			const double dy = negArea ? vay - vby : vby - vay;
 			const bool topLeft = (dy == 0.0f && dx < 0.0f) || dy > 0.0f;
-			return topLeft ? 0.0f : -1.0f / 65536.0f;
+			return topLeft ? 0.0f : FILL_RULE_BIAS;
 		};
-		const float bias0 = topLeftBias(x1, y1, x2, y2);
-		const float bias1 = topLeftBias(x2, y2, x0, y0);
-		const float bias2 = topLeftBias(x0, y0, x1, y1);
+		const double bias0 = topLeftBias(x1, y1, x2, y2);
+		const double bias1 = topLeftBias(x2, y2, x0, y0);
+		const double bias2 = topLeftBias(x0, y0, x1, y1);
 
-		const float pxStart = iMinX + 0.5f, pyStart = iMinY + 0.5f;
-		float rw0 = EdgeFunction(x1, y1, x2, y2, pxStart, pyStart);
-		float rw1 = EdgeFunction(x2, y2, x0, y0, pxStart, pyStart);
-		float rw2 = EdgeFunction(x0, y0, x1, y1, pxStart, pyStart);
+		const double pxStart = iMinX + 0.5f, pyStart = iMinY + 0.5f;
+		double rw0 = EdgeFunction(x1, y1, x2, y2, pxStart, pyStart);
+		double rw1 = EdgeFunction(x2, y2, x0, y0, pxStart, pyStart);
+		double rw2 = EdgeFunction(x0, y0, x1, y1, pxStart, pyStart);
 		if (negArea)
 		{
 			rw0 = -rw0;
@@ -748,7 +738,7 @@ void SoftwareRenderer::DrawScreenTriangleFan(const Point2D* pts, const int numPo
 		for (int py = iMinY; py <= iMaxY; py++)
 		{
 			// Find contiguous inside span (triangle is convex) then fill with std::fill
-			float w0 = rw0, w1 = rw1, w2 = rw2;
+			double w0 = rw0, w1 = rw1, w2 = rw2;
 			int spanStart = -1, spanEnd = -1;
 
 			for (int px = iMinX; px <= iMaxX; px++)

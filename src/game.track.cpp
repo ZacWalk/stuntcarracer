@@ -1135,8 +1135,8 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		for (int32_t i = 0; i < numCoords; i++)
 		{
 			auto rotated = GetRotatedPieceXZ(pieceXZ[j], roughAngle);
-			int32_t rx = rotated.x * PC_FACTOR;
-			int32_t rz = rotated.z * PC_FACTOR;
+			double rx = rotated.x * PC_FACTOR;
+			double rz = rotated.z * PC_FACTOR;
 
 			t.Track[piece].coords[(i * 4)].x = rx;
 			t.Track[piece].coords[(i * 4)].z = rz;
@@ -1165,7 +1165,7 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		for (int32_t i = 0; i < numCoords; i++)
 		{
 			// top left y
-			int32_t y = Piece_Y[leftID][i].y + leftOverallShift;
+			double y = Piece_Y[leftID][i].y + leftOverallShift;
 			t.Track[piece].coords[(i * 4)].y = y * PC_FACTOR;
 
 			// bottom left y
@@ -1185,9 +1185,9 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 
 		for (int32_t i = 0; i < numSegments; i++)
 		{
-			const int32_t y1 = t.Track[piece].coords[(i * 4)].y - t.Track[piece].coords[(i + 1) * 4].y;
-			const int32_t y2 = t.Track[piece].coords[i * 4 + 1].y - t.Track[piece].coords[(i + 1) * 4 + 1].y;
-			const int32_t y = abs(y1) > abs(y2) ? y1 : y2;
+			const double y1 = t.Track[piece].coords[(i * 4)].y - t.Track[piece].coords[(i + 1) * 4].y;
+			const double y2 = t.Track[piece].coords[i * 4 + 1].y - t.Track[piece].coords[(i + 1) * 4 + 1].y;
+			const double y = abs(y1) > abs(y2) ? y1 : y2;
 
 			if (abs(y) >= 640 * PC_FACTOR)
 				t.Track[piece].roadColour[i] = SCR_BASE_COLOUR + 0;
@@ -1205,12 +1205,13 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		const int32_t lastPiece = piece > 0 ? piece - 1 : t.NumTrackPieces - 1;
 
 		// Pieces are in different cubes; account for cube position difference
-		const int32_t cubeX = t.Track[piece].x << (LOG_CUBE_SIZE - LOG_PRECISION);
-		const int32_t cubeY = t.Track[piece].y << (LOG_CUBE_SIZE - LOG_PRECISION);
-		const int32_t cubeZ = t.Track[piece].z << (LOG_CUBE_SIZE - LOG_PRECISION);
-		const int32_t lastCubeX = t.Track[lastPiece].x << (LOG_CUBE_SIZE - LOG_PRECISION);
-		const int32_t lastCubeY = t.Track[lastPiece].y << (LOG_CUBE_SIZE - LOG_PRECISION);
-		const int32_t lastCubeZ = t.Track[lastPiece].z << (LOG_CUBE_SIZE - LOG_PRECISION);
+		// (in render-space world units, matching the COORD_3D coords).
+		const double cubeX = t.Track[piece].x * WORLD_CUBE_SIZE;
+		const double cubeY = t.Track[piece].y * WORLD_CUBE_SIZE;
+		const double cubeZ = t.Track[piece].z * WORLD_CUBE_SIZE;
+		const double lastCubeX = t.Track[lastPiece].x * WORLD_CUBE_SIZE;
+		const double lastCubeY = t.Track[lastPiece].y * WORLD_CUBE_SIZE;
+		const double lastCubeZ = t.Track[lastPiece].z * WORLD_CUBE_SIZE;
 
 		int32_t j = t.Track[lastPiece].numSegments * 4;
 		for (int32_t i = 0; i < 4; i++, j++)
@@ -1392,28 +1393,28 @@ static void SetSegmentTextures(const TrackState& t)
 }
 
 
-static Vec3 GetPieceVertex(const TrackState& t, const int32_t piece, const int32_t piece_x, const int32_t piece_y,
-                           const int32_t piece_z,
+static Vec3 GetPieceVertex(const TrackState& t, const int32_t piece, const double piece_x, const double piece_y,
+                           const double piece_z,
                            const int32_t offset)
 {
-	int32_t x = t.Track[piece].coords[offset].x;
-	int32_t y = t.Track[piece].coords[offset].y;
+	double x = t.Track[piece].coords[offset].x;
+	double y = t.Track[piece].coords[offset].y;
 	// y co-ordinates need to be divided by 4 for display
 	y = y / 4;
-	int32_t z = t.Track[piece].coords[offset].z;
+	double z = t.Track[piece].coords[offset].z;
 
 	x += piece_x;
 	y += piece_y;
 	z += piece_z;
 
-	return Vec3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
+	return Vec3(x, y, z);
 }
 
 
-static void StorePieceVertex(const TrackState& t, const int32_t piece, const int32_t piece_x, const int32_t piece_y,
-                             const int32_t piece_z,
-                             const int32_t coordOffset, SWVertex* pVertices, const uint32_t colour, const float tu,
-                             const float tv)
+static void StorePieceVertex(const TrackState& t, const int32_t piece, const double piece_x, const double piece_y,
+                             const double piece_z,
+                             const int32_t coordOffset, SWVertex* pVertices, const uint32_t colour, const double tu,
+                             const double tv)
 {
 	const Vec3 v = GetPieceVertex(t, piece, piece_x, piece_y, piece_z, coordOffset);
 	pVertices[trackVertices].pos = v;
@@ -1441,7 +1442,7 @@ void RemoveShadowTriangles(void)
 	numShadowVertices = 0;
 }
 
-void StoreShadowTriangle(const Vec3 v1, const Vec3 v2, const Vec3 v3, const int32_t other_colour)
+void StoreShadowTriangle(const Vec3& v1, const Vec3& v2, const Vec3& v3, const int32_t other_colour)
 {
 	if (!pShadowVertices) return;
 
@@ -1474,9 +1475,10 @@ static void CreateUpdatePieceInVB(const TrackState& t, const int32_t piece, cons
 	}
 
 	// Calculate position of piece's bottom front left corner, within world
-	const int32_t piece_x = t.Track[piece].x << (LOG_CUBE_SIZE - LOG_PRECISION);
-	const int32_t piece_y = t.Track[piece].y << (LOG_CUBE_SIZE - LOG_PRECISION);
-	const int32_t piece_z = t.Track[piece].z << (LOG_CUBE_SIZE - LOG_PRECISION);
+	// (in render-space world units, matching the COORD_3D coords).
+	const double piece_x = t.Track[piece].x * WORLD_CUBE_SIZE;
+	const double piece_y = t.Track[piece].y * WORLD_CUBE_SIZE;
+	const double piece_z = t.Track[piece].z * WORLD_CUBE_SIZE;
 
 	if (face == ROAD)
 	{
@@ -1613,8 +1615,7 @@ static constexpr int32_t TEXTURED_SEGMENTS_AROUND_PLAYER = 11;
 
 
 void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRenderer& r, const int32_t playerCurrentPiece,
-               const int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures,
-               const bool disableCulling)
+               const int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures)
 {
 	int32_t segmentsRendered = 0;
 
@@ -1622,9 +1623,6 @@ void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRendere
 		return;
 
 	if (!pTrackVertices || !pTrackIndices) return;
-
-	//r.SetDepthTestEnabled(true);
-	//r.SetCullMode(disableCulling ? SoftwareRenderer::CULL_NONE : SoftwareRenderer::CULL_CCW);
 
 	if (GameMode == TRACK_MENU || GameMode == TRACK_PREVIEW)
 	{
