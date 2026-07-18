@@ -38,12 +38,11 @@ The final RGBA framebuffer is blitted to the window with `SetDIBitsToDevice`.
 
 ## Building
 
-You need **Visual Studio 2022** (with the Desktop C++ workload installed) to build
+You need **Visual Studio** (with the Desktop C++ workload installed) to build
 this project. Open [game.sln](game.sln) and build the **Debug | Win32** or
 **Release | Win32** configuration, or run the *Build Debug Win32* / *Build
-Release Win32* task from VS Code started in a Developer PowerShell. Binaries are
-written under `exe/`, named for the platform and configuration, for example
-`StuntCarRacerWin32Debug.exe` or `StuntCarRacerx64Release.exe`.
+Release Win32* task from VS Code. The output `StuntCarRacer.exe` is written
+under `output/Win32/<Configuration>/`.
 
 The game is a single EXE file. All game data (tracks and sound) are contained as resources.
 
@@ -103,5 +102,7 @@ usual Alt-mnemonics: Alt+G then P / E / R).
 6. Draw Bridge
 7. High Jump
 8. Roller Coaster
+
+
 
 

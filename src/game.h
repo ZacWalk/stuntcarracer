@@ -28,8 +28,8 @@ struct Point2D;
 
 constexpr int32_t SCR_BASE_COLOUR = 26;
 constexpr double PI = 3.14159265358979323846;
-constexpr float SCR_PI = PI;
-constexpr float FURTHEST_Z = 131072.0f;
+constexpr double SCR_PI = PI;
+constexpr double FURTHEST_Z = 131072.0f;
 
 constexpr int32_t PRECISION = 16384;
 constexpr int32_t LOG_PRECISION = 14;
@@ -78,16 +78,39 @@ constexpr int IDM_PAUSE_OPPONENT = 1301;
 constexpr int IDM_RESTART_RACE = 1302;
 
 // ---------------------------------------------------------------------------
-// Fixed-point 3D math
+// 3D math: rotations, angles, world coordinates
+// ---------------------------------------------------------------------------
+//
+// Angles are stored as `double` values in "Amiga units" where a full circle ==
+// MAX_ANGLE (== 65536). Use ANGLE_TO_RADIANS / AngleToRadians() to feed
+// std::sin/std::cos. Angles outside [0, MAX_ANGLE) should be normalised with
+// WrapAngle() before use.
+//
+// World coordinates and rotation matrix components are plain doubles in true
+// physical units — no PRECISION fixed-point scaling. (PRECISION is retained
+// only as a unit converter at the legacy physics-space boundary inside
+// game.drive.cpp / game.opponent.cpp.)
 // ---------------------------------------------------------------------------
 
 constexpr int32_t MAX_ANGLE = 65536;
+constexpr double ANGLE_TO_RADIANS = 2.0 * PI / MAX_ANGLE;
 
 constexpr int32_t _360_DEGREES = MAX_ANGLE;
 constexpr int32_t _270_DEGREES = 3 * MAX_ANGLE / 4;
 constexpr int32_t _180_DEGREES = MAX_ANGLE / 2;
 constexpr int32_t _90_DEGREES = MAX_ANGLE / 4;
 constexpr int32_t _0_DEGREES = 0;
+
+// Wrap an angle expressed in MAX_ANGLE units (a full circle == MAX_ANGLE)
+// into the canonical range [0, MAX_ANGLE). Replaces the integer
+// `& (MAX_ANGLE - 1)` modulo trick now that angles are stored as doubles
+// (which carry sub-unit fractional precision and arbitrary magnitude).
+inline double WrapAngle(double a)
+{
+	a = std::fmod(a, static_cast<double>(MAX_ANGLE));
+	if (a < 0) a += MAX_ANGLE;
+	return a;
+}
 
 // Rotation matrix component indices
 constexpr int X_X_COMP = 0;
@@ -106,9 +129,9 @@ constexpr int32_t NUM_OPPONENTS = 11;
 
 struct COORD_3D
 {
-	int32_t x;
-	int32_t y;
-	int32_t z;
+	double x;
+	double y;
+	double z;
 };
 
 struct COORD_2D
@@ -119,51 +142,65 @@ struct COORD_2D
 
 struct COORD_XZ
 {
-	int32_t x;
-	int32_t z;
+	double x;
+	double z;
 };
 
 struct COORD_Y
 {
-	int32_t y;
+	double y;
 };
 
-struct SinCos
-{
-	int16_t sin;
-	int16_t cos;
-};
-
+// View angles in double radians. Produced by LockViewpointToTarget and
+// consumed directly by the renderer (DrawBackdrop / Mat4RotationX/Y/Z).
 struct ViewAngle
 {
-	int32_t x_angle;
-	int32_t y_angle;
+	double x_angle; // radians
+	double y_angle; // radians
 };
 
+// 3x3 rotation matrix with components in true range [-1, 1] (no PRECISION
+// scaling). Built by CalcYXZTrigCoefficients().
 struct RotationMatrix
 {
-	int16_t coeffs[NUM_TRIG_COEFFS];
-	int16_t operator[](const int i) const { return coeffs[i]; }
+	double coeffs[NUM_TRIG_COEFFS];
+	double operator[](const int i) const { return coeffs[i]; }
 };
 
-void CreateSinCosTable();
-SinCos GetSinCos(int32_t angle);
+// World-space displacement in floating point (matches the precision of the
+// double player_x/y/z world coordinates).
+struct WorldVec3
+{
+	double x, y, z;
+};
 
-RotationMatrix CalcYXZTrigCoefficients(int32_t x_angle,
-                                       int32_t y_angle,
-                                       int32_t z_angle);
+// Convert an Amiga-style angle in MAX_ANGLE units (a full circle ==
+// MAX_ANGLE) to true radians, for direct use with renderer rotation matrices
+// and trig.
+inline double AngleToRadians(const double a)
+{
+	return a * ANGLE_TO_RADIANS;
+}
 
-COORD_3D WorldOffset(const RotationMatrix& rot,
-                     int32_t x,
-                     int32_t y,
-                     int32_t z);
+RotationMatrix CalcYXZTrigCoefficients(double x_angle,
+                                       double y_angle,
+                                       double z_angle);
 
-ViewAngle LockViewpointToTarget(int32_t viewpoint_x,
-                                int32_t viewpoint_y,
-                                int32_t viewpoint_z,
-                                int32_t target_x,
-                                int32_t target_y,
-                                int32_t target_z);
+// Transforms (x, y, z) from local space to world space. The result is in
+// render-space world units (i.e. matches the world coordinates that the
+// renderer / viewpoint pipeline consume directly, NOT the still-PRECISION-
+// scaled physics-space player_x/y/z).
+WorldVec3 WorldOffset(const RotationMatrix& rot,
+                      double x,
+                      double y,
+                      double z);
+
+ViewAngle LockViewpointToTarget(double viewpoint_x,
+                                double viewpoint_y,
+                                double viewpoint_z,
+                                double tgt_x,
+                                double tgt_y,
+                                double tgt_z);
 
 
 // ---------------------------------------------------------------------------
@@ -176,6 +213,13 @@ constexpr int32_t NUM_TRACK_CUBES = 16;
 constexpr int32_t CUBE_SIZE = 0x04000000; // (0x800 * PC_FACTOR * PRECISION)
 constexpr int32_t LOG_CUBE_SIZE = 26;
 constexpr int32_t TRACK_BOTTOM_Y = 0;
+
+// Cube size expressed in render-space world units (i.e. CUBE_SIZE / PRECISION).
+// This is the natural floating-point step that converts a TRACK_PIECE.x/y/z
+// cube index into a render-space world offset, replacing the old integer
+// `<< (LOG_CUBE_SIZE - LOG_PRECISION)` bit-shift idiom that propagated
+// fixed-point assumptions into the rendering / world-coord paths.
+constexpr double WORLD_CUBE_SIZE = static_cast<double>(CUBE_SIZE) / PRECISION;
 
 // Track numbers do not correspond to track league positions
 constexpr int32_t NO_TRACK = -1;
@@ -232,7 +276,7 @@ void FreeTrackData(const TrackState& t);
 void CreateTrackVertexBuffer(const TrackState& t);
 void FreeTrackVertexBuffer();
 void DrawTrack(const TrackState& t, GameModeType GameMode, SoftwareRenderer& r, int32_t playerCurrentPiece,
-               int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures, bool disableCulling = false);
+               int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures);
 void CreateShadowVertexBuffer();
 void FreeShadowVertexBuffer();
 
@@ -261,12 +305,12 @@ enum CarType
 
 struct CarPose
 {
-	int32_t x;
-	int32_t y;
-	int32_t z;
-	int32_t x_angle;
-	int32_t y_angle;
-	int32_t z_angle;
+	double x;
+	double y;
+	double z;
+	double x_angle;
+	double y_angle;
+	double z_angle;
 };
 
 struct GameState
@@ -282,8 +326,8 @@ struct GameState
 	int32_t players_distance_into_section = 0;
 	int32_t players_road_x_position = 0;
 	int32_t rear_wheel_surface_x_position = 0;
-	int32_t player_y = 0;
-	int32_t player_z_speed = 0;
+	double player_y = 0.0;
+	double player_z_speed = 0.0;
 
 	int32_t front_left_damage = 0;
 	int32_t front_right_damage = 0;
@@ -291,9 +335,9 @@ struct GameState
 	int32_t damaged = 0;
 	int32_t new_damage = 0;
 
-	int32_t car_collision_x_acceleration = 0;
-	int32_t car_collision_y_acceleration = 0;
-	int32_t car_collision_z_acceleration = 0;
+	double car_collision_x_acceleration = 0.0;
+	double car_collision_y_acceleration = 0.0;
+	double car_collision_z_acceleration = 0.0;
 
 	int32_t boostReserve = 0;
 	int32_t boostUnit = 0;
@@ -318,19 +362,19 @@ struct GameState
 
 	static constexpr int32_t LOCAL_Y_FACTOR = 4;
 
-	int32_t player_x = 0,
-	        player_z = 0;
+	double player_x = 0.0,
+	       player_z = 0.0;
 
-	int32_t player_x_angle = 0,
-	        player_y_angle = 0,
-	        player_z_angle = 0;
+	double player_x_angle = 0.0,
+	       player_y_angle = 0.0,
+	       player_z_angle = 0.0;
 
-	int32_t player_world_x_speed = 0,
-	        player_world_y_speed = 0,
-	        player_world_z_speed = 0;
+	double player_world_x_speed = 0.0,
+	       player_world_y_speed = 0.0,
+	       player_world_z_speed = 0.0;
 
-	int32_t player_x_speed = 0,
-	        player_y_speed = 0;
+	double player_x_speed = 0.0,
+	       player_y_speed = 0.0;
 
 	int32_t accelerate = 0, brake = 0;
 
@@ -340,78 +384,77 @@ struct GameState
 	int32_t boost_unit_value = 16; // (16 standard, 12 super)
 
 	int32_t left_right_value = 0;
-	int32_t engine_z_acceleration = 0;
+	double engine_z_acceleration = 0.0;
 	int32_t boost_activated = 0;
 
-	int32_t rear_wheel_x_offset = 0, rear_wheel_z_offset = 0;
-	int32_t front_left_wheel_x_offset = 0, front_left_wheel_z_offset = 0;
-	int32_t front_right_wheel_x_offset = 0, front_right_wheel_z_offset = 0;
+	double rear_wheel_x_offset = 0.0, rear_wheel_z_offset = 0.0;
+	double front_left_wheel_x_offset = 0.0, front_left_wheel_z_offset = 0.0;
+	double front_right_wheel_x_offset = 0.0, front_right_wheel_z_offset = 0.0;
 
-	int32_t front_left_road_height = OFF_ROAD_HEIGHT;
-	int32_t front_right_road_height = OFF_ROAD_HEIGHT;
-	int32_t rear_road_height = OFF_ROAD_HEIGHT;
+	double front_left_road_height = OFF_ROAD_HEIGHT;
+	double front_right_road_height = OFF_ROAD_HEIGHT;
+	double rear_road_height = OFF_ROAD_HEIGHT;
 
-	int32_t front_left_actual_height = 0;
-	int32_t front_right_actual_height = 0;
-	int32_t rear_actual_height = 0;
+	double front_left_actual_height = 0.0;
+	double front_right_actual_height = 0.0;
+	double rear_actual_height = 0.0;
 
 	int32_t off_left = 0, off_right = 0;
-	int32_t wheel_off_road = 0, distance_off_road = 0;
+	int32_t wheel_off_road = 0;
+	double distance_off_road = 0.0;
 	int32_t at_side_byte = 0, which_side_byte = 0;
 	int32_t smaller_limit_required = false;
 
 	int32_t wreck_wheel_height_reduction = 0; // 0x200 if wrecked
 
 	int32_t on_chains = false;
-	int32_t chain_height_remaining = 0;
+	double chain_height_remaining = 0.0;
 
-	int32_t player_distance_off_road = 0;
+	double player_distance_off_road = 0.0;
 	int32_t off_map_status = 0;
 
 	int32_t off_track_count = 0;
 
-	int32_t gravity_x_acceleration = 0,
-	        gravity_y_acceleration = 0,
-	        gravity_z_acceleration = 0;
+	double gravity_x_acceleration = 0.0,
+	       gravity_y_acceleration = 0.0,
+	       gravity_z_acceleration = 0.0;
 
 	int32_t grounded_delay = 0;
 	int32_t grounded_count = 0;
 	int32_t damage_value = 0;
 	int32_t damaged_count = 0;
 
-	int32_t front_left_amount_below_road = 0,
-	        front_right_amount_below_road = 0,
-	        rear_amount_below_road = 0;
+	double front_left_amount_below_road = 0.0,
+	       front_right_amount_below_road = 0.0,
+	       rear_amount_below_road = 0.0;
 
-	int32_t old_front_left_difference = 0,
-	        old_front_right_difference = 0,
-	        old_rear_difference = 0;
+	double old_front_left_difference = 0.0,
+	       old_front_right_difference = 0.0,
+	       old_rear_difference = 0.0;
 
 	int32_t smashed_countdown = 0;
 
-	int32_t car_to_road_collision_z_acceleration = 0;
+	double car_to_road_collision_z_acceleration = 0.0;
 
-	int32_t player_x_acceleration = 0,
-	        player_y_acceleration = 0,
-	        player_z_acceleration = 0;
+	double player_x_acceleration = 0.0,
+	       player_y_acceleration = 0.0,
+	       player_z_acceleration = 0.0;
 
-	int32_t total_world_x_acceleration = 0,
-	        total_world_y_acceleration = 0,
-	        total_world_z_acceleration = 0;
+	double total_world_x_acceleration = 0.0,
+	       total_world_y_acceleration = 0.0,
+	       total_world_z_acceleration = 0.0;
 
-	int32_t player_x_rotation_speed = 0,
-	        player_y_rotation_speed = 0,
-	        player_z_rotation_speed = 0;
+	double player_x_rotation_speed = 0.0,
+	       player_y_rotation_speed = 0.0,
+	       player_z_rotation_speed = 0.0;
 
-	int32_t player_final_x_rotation_speed = 0,
-	        player_final_y_rotation_speed = 0,
-	        player_final_z_rotation_speed = 0;
+	double player_final_x_rotation_speed = 0.0,
+	       player_final_y_rotation_speed = 0.0,
+	       player_final_z_rotation_speed = 0.0;
 
-	int32_t player_x_rotation_acceleration = 0,
-	        player_y_rotation_acceleration = 0,
-	        player_z_rotation_acceleration = 0;
-
-	int32_t Replay = false, ReplayRequested = false, ReplayFinished = false;
+	double player_x_rotation_acceleration = 0.0,
+	       player_y_rotation_acceleration = 0.0,
+	       player_z_rotation_acceleration = 0.0;
 
 	bool raceFinished = false;
 	bool raceWon = false;
@@ -427,7 +470,7 @@ struct GameState
 
 void ResetPlayer(GameState& player);
 
-int32_t LimitViewpointY(TrackState& track, GameState& player, int32_t y);
+double LimitViewpointY(TrackState& track, GameState& player, double y);
 int32_t CalculateDisplaySpeed(const GameState& player);
 void FramesWheelsEngine(SoundState& sound, PlatformSoundBuffer* engineSoundBuffers[]);
 void EngineSoundStopped();
@@ -456,24 +499,24 @@ void DrawCar(SoftwareRenderer& r);
 
 struct OpponentPose
 {
-	int32_t x;
-	int32_t y;
-	int32_t z;
-	float x_angle;
-	float y_angle;
-	float z_angle;
+	double x;
+	double y;
+	double z;
+	double x_angle;
+	double y_angle;
+	double z_angle;
 };
 
 std::wstring_view GetOpponentName(int32_t opponentID);
 
 CarPose CarBehaviour(TrackState& track, GameState& player, const SoundState& sound,
                      uint32_t input,
-                     int32_t x,
-                     int32_t y,
-                     int32_t z,
-                     int32_t x_angle,
-                     int32_t y_angle,
-                     int32_t z_angle);
+                     double x,
+                     double y,
+                     double z,
+                     double x_angle,
+                     double y_angle,
+                     double z_angle);
 
 OpponentPose OpponentBehaviour(TrackState& track,
                                GameState& game,
@@ -516,10 +559,10 @@ struct SoundState
 // ---------------------------------------------------------------------------
 
 void DrawBackdrop(SoftwareRenderer& r,
-                  int32_t viewpoint_y,
-                  int32_t viewpoint_x_angle,
-                  int32_t viewpoint_y_angle,
-                  int32_t viewpoint_z_angle);
+                  double viewpoint_y,
+                  double viewpoint_x_angle, // radians
+                  double viewpoint_y_angle, // radians
+                  double viewpoint_z_angle); // radians
 
 void NextSceneryType();
 int32_t GetSceneryType();

@@ -4,7 +4,7 @@
         {
             "label": "Build Debug Win32",
             "type": "process",
-            "command": "msbuild",
+            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
             "args": [
                 "game.sln",
                 "/p:Configuration=Debug",
@@ -21,7 +21,7 @@
         {
             "label": "Build Release Win32",
             "type": "process",
-            "command": "msbuild",
+            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
             "args": [
                 "game.sln",
                 "/p:Configuration=Release",
@@ -35,7 +35,7 @@
         {
             "label": "Rebuild Debug Win32",
             "type": "process",
-            "command": "msbuild",
+            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
             "args": [
                 "game.sln",
                 "/p:Configuration=Debug",
