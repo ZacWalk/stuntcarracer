@@ -549,6 +549,7 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 
 	AppRun();
 
+	PlatformSoundShutdown();
 	if (g_hAccel) DestroyAcceleratorTable(g_hAccel);
 	return 0;
 }

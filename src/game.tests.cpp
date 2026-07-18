@@ -158,8 +158,8 @@ namespace
 			// Sample at a few interesting frames.
 			if (i <= 5 || i == 50 || i == 100 || i == 200 || i == kMaxFrames)
 			{
-				log.log("  frame %3d: player_y=%.1f, chain_remaining=%d, on_chains=%d, "
-				        "touching_road=%d, fl_road=%d, fl_actual=%d\n",
+				log.log("  frame %3d: player_y=%.1f, chain_remaining=%.1f, on_chains=%d, "
+				        "touching_road=%d, fl_road=%.1f, fl_actual=%.1f\n",
 				        i, car.y, g_gameState.chain_height_remaining,
 				        g_gameState.on_chains ? 1 : 0,
 				        g_gameState.touching_road ? 1 : 0,
@@ -171,12 +171,12 @@ namespace
 		settled_y = car.y;
 		settled_road_height = static_cast<int32_t>(g_gameState.front_left_road_height);
 
-		log.log("  Final: player_y=%.1f, chain_remaining=%d, on_chains=%d, "
-		        "touching_road=%d, fl_road_height=%d, fl_actual_height=%d\n",
+		log.log("  Final: player_y=%.1f, chain_remaining=%.1f, on_chains=%d, "
+		        "touching_road=%d, fl_road_height=%.1f, fl_actual_height=%.1f\n",
 		        settled_y, g_gameState.chain_height_remaining,
 		        g_gameState.on_chains ? 1 : 0,
 		        g_gameState.touching_road ? 1 : 0,
-		        settled_road_height, g_gameState.front_left_actual_height);
+		        g_gameState.front_left_road_height, g_gameState.front_left_actual_height);
 		log.log("  chains finished at frame: %d, first touched at frame: %d\n",
 		        chainsDoneFrame, restingFrame);
 
@@ -185,11 +185,9 @@ namespace
 		log.check(restingFrame > 0, "car came into contact with road during sequence");
 
 		// Sanity: the car should be near the road, not far below it.
-		// front_left_actual_height ~= player_y >> 8 in internal units; if it has
-		// fallen way below the road the difference will be very negative.
-		const int32_t below = static_cast<int32_t>(g_gameState.front_left_road_height -
-			g_gameState.front_left_actual_height);
-		log.log("  road - actual = %d (positive = car under road)\n", below);
+		const double below = g_gameState.front_left_road_height -
+			g_gameState.front_left_actual_height;
+		log.log("  road - actual = %.1f (positive = car under road)\n", below);
 		log.check(below < 0x400,
 		          "car not deep below road surface (front_left road - actual < 0x400)");
 	}

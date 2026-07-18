@@ -672,7 +672,7 @@ static void CalculateRoadWheelHeights(TrackState& track, GameState& player)
 		wheel_pos[i].y = CalculateRoadWheelHeight(player, height, wheel_pos[i].y);
 
 		if (i == REAR)
-			player.player_distance_off_road = abs(player.distance_off_road);
+			player.player_distance_off_road = std::abs(player.distance_off_road);
 	}
 
 	// store heights in global variables
@@ -703,7 +703,7 @@ static double CalculateRoadWheelHeight(GameState& player, double height, const d
 	const double angle = player.player_x_angle < _180_DEGREES
 		                     ? player.player_x_angle
 		                     : player.player_x_angle - _360_DEGREES;
-	if (abs(player.player_z_speed) >= 0xA00 || std::abs(angle) >= 0x600)
+	if (std::abs(player.player_z_speed) >= 0xA00 || std::abs(angle) >= 0x600)
 		return height;
 
 	return (height + prev_height) / 2.0;
@@ -712,7 +712,7 @@ static double CalculateRoadWheelHeight(GameState& player, double height, const d
 static double CalculateIfCarOffRoad(GameState& player, double height)
 {
 	// calculate how far the current wheel is off the left or right of the road
-	const double x = abs(player.distance_off_road);
+	const double x = std::abs(player.distance_off_road);
 
 	if (x > 3 * CAR_WIDTH / 4)
 	{
@@ -1046,6 +1046,7 @@ static SurfaceCoords GetSurfaceCoords(const TrackState& track, const int32_t pie
 	if (segment < 0 || segment >= t.numSegments)
 	{
 		PlatformShowError(L"GetSurfaceCoords segment out of range", L"Error");
+		return {};
 	}
 
 	SurfaceCoords sc;
@@ -1924,7 +1925,7 @@ static void AlignCarWithRoad(GameState& player)
 
 	adjust = (adjust * speed) / 32768.0;
 
-	if (adjust == 0) adjust = 1; // atleast do some adjusting
+	if (adjust < 1.0) adjust = 1.0; // atleast do some adjusting
 
 	// needs to correct signs because PC StuntCarRacer rotation is in opposite direction
 	if (difference_angle >= 0)
@@ -2084,7 +2085,7 @@ static void ReduceWorldAcceleration(GameState& game)
 
 	if (game.touching_road || game.on_chains)
 	{
-		amount = abs(game.car_to_road_collision_z_acceleration / 256.0);
+		amount = std::abs(game.car_to_road_collision_z_acceleration / 256.0);
 
 		if (amount >= 3 || game.off_map_status != 0 || WRECKED || game.on_chains)
 		{

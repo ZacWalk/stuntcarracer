@@ -99,6 +99,13 @@ static double target_x, target_y, target_z;
 static double render_x_angle = 0;
 static double render_z_angle = 0;
 
+// Render-only car height (world-space, +Y up) used by SetCarWorldTransform.
+// When grounded it is anchored to the road plane sampled under the wheels so
+// the visible car sits flush with the track instead of following the lagged
+// physics player_y (which is allowed to sink up to MAX_BELOW_ROAD into the
+// surface). Driven by UpdateRenderAngles each frame.
+static double render_car_y = 0;
+
 // Compute the angle (in MAX_ANGLE units) whose sine equals s. Used to convert
 // a road-plane slope into an Amiga-style angle.
 static double AngleFromSin(double s)
@@ -151,6 +158,26 @@ static void UpdateRenderAngles()
 	const double dz = WrapAngleSigned(target_z_angle - render_z_angle);
 	render_x_angle = WrapAngle(render_x_angle + dx * kSmoothingFactor);
 	render_z_angle = WrapAngle(render_z_angle + dz * kSmoothingFactor);
+
+	// Drive the render-only car height. When grounded, anchor the wheel-contact
+	// plane to the road centroid sampled under the wheels (road_height units,
+	// positive-up; /16 -> render-Y). The mesh's wheel bottoms sit VCAR_HEIGHT/4
+	// below the model origin, so lifting by that amount places the wheels on the
+	// road. This matches the old flat-ground constant (VCAR_HEIGHT*3/8 combined
+	// with the spring equilibrium) but tracks slopes and landings without the
+	// physics penetration lag that let tilted car corners poke through the road.
+	// When airborne, fall back to the physics height with the original offset.
+	if (grounded)
+	{
+		const double front_avg_road =
+			(g_gameState.front_left_road_height + g_gameState.front_right_road_height) / 2;
+		const double contact_road = (front_avg_road + g_gameState.rear_road_height) / 2;
+		render_car_y = contact_road / 16.0 + VCAR_HEIGHT / 4;
+	}
+	else
+	{
+		render_car_y = -player1_y + VCAR_HEIGHT * 3 / 8;
+	}
 }
 
 void InitialiseData(TrackState& t)
@@ -378,7 +405,7 @@ static void CalcGameViewpoint()
 		const double fr = g_gameState.front_right_road_height;
 		const double rr = g_gameState.rear_road_height;
 		const double road_height = std::max({fl, fr, rr});
-		if (road_height < GameState::OFF_ROAD_HEIGHT)
+		if (road_height > GameState::OFF_ROAD_HEIGHT)
 		{
 			// road_height is in road_height units (256-per-render-Y). The matching
 			// render-space external y is -road_height / 16.
@@ -411,9 +438,11 @@ static void SetCarWorldTransform()
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationY(ya);
 	matRot = Mat4Multiply(matRot, matTemp);
-	// player1_x/y/z are render-space units already.
+	// player1_x/z are render-space units already. The vertical position comes
+	// from render_car_y, which anchors the wheel-contact plane to the road when
+	// grounded (see UpdateRenderAngles) so the car stays flush with the track.
 	const Mat4 matTrans = Mat4Translation(player1_x,
-	                                      -player1_y + VCAR_HEIGHT * 3 / 8,
+	                                      render_car_y,
 	                                      player1_z);
 	matWorldCar = Mat4Multiply(matRot, matTrans);
 }

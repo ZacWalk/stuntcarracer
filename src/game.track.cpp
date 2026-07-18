@@ -1878,7 +1878,7 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 	t.StartLinePiece = t.PlayersStartPiece;
 
 	t.HalfALapPiece = t.StartLinePiece + t.NumTrackPieces / 2;
-	if (t.HalfALapPiece > t.NumTrackPieces) t.HalfALapPiece -= t.NumTrackPieces;
+	if (t.HalfALapPiece >= t.NumTrackPieces) t.HalfALapPiece -= t.NumTrackPieces;
 
 	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++)
 		Piece_X_Z_Position[j] = static_cast<char>(buffer[i]);
