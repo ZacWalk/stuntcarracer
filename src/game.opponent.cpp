@@ -558,6 +558,7 @@ static SurfaceCoords GetSurfaceCoords(const TrackState& t, const int32_t piece, 
 	if (segment < 0 || segment >= t.Track[piece].numSegments)
 	{
 		PlatformShowError(L"GetSurfaceCoords(opponent) segment out of range", L"Error");
+		return {};
 	}
 
 	SurfaceCoords sc;
@@ -1382,8 +1383,6 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 	if (!opp_touching_road)
 		return;
 
-	if (d0 < 0) //temp, remove
-		PlatformShowError(L"Less than 0", L"Error"); //temp
 	if (d0 >= 225)
 		return;
 
