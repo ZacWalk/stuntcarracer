@@ -114,11 +114,12 @@ void PlatformClose();
 void PlatformSetMenu(std::vector<MenuCommand> menuDef);
 
 // App methods called by platform layer
-void AppInit();
+bool AppInit();
 void AppRun();
 void AppHandleFrameSize(int cx, int cy);
 void AppHandleKeyDown(uint32_t nChar);
 void AppHandleKeyUp(uint32_t nChar);
+void AppResetInput();
 
 // Headless self-test entry. Returns process exit code (0 = success).
 int AppRunTests();
