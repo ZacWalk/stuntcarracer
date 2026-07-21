@@ -116,14 +116,21 @@ namespace
 		g_gameState.INITIALISE_PLAYER = true;
 
 		CarVars car;
+		car.x_angle = 0x1800;
+		car.z_angle = 0x1000;
 
 		// Frame 1 triggers the new-game branch in CarBehaviour, which calls
 		// PositionCarAbovePiece and sets up the chain drop.
 		StepFrame(car);
 
 		const double start_y = car.y;
+		const double chain_x = car.x;
+		const double chain_z = car.z;
 		const int32_t start_chain = static_cast<int32_t>(g_gameState.chain_height_remaining);
 		const bool start_on_chains = g_gameState.on_chains != 0;
+		bool chain_position_stable = true;
+		bool chain_angles_level =
+			g_gameState.player_x_angle == 0 && g_gameState.player_z_angle == 0;
 
 		log.log("  After first frame: player_y=%.1f, chain_remaining=%d, on_chains=%d, touching_road=%d\n",
 		        start_y, start_chain, start_on_chains ? 1 : 0,
@@ -145,6 +152,13 @@ namespace
 		for (int i = 2; i <= kMaxFrames; ++i)
 		{
 			StepFrame(car);
+			if (g_gameState.on_chains)
+			{
+				chain_position_stable = chain_position_stable &&
+					car.x == chain_x && car.z == chain_z;
+				chain_angles_level = chain_angles_level &&
+					g_gameState.player_x_angle == 0 && g_gameState.player_z_angle == 0;
+			}
 
 			if (chainsDoneFrame < 0 && !g_gameState.on_chains)
 				chainsDoneFrame = i;
@@ -181,6 +195,8 @@ namespace
 		        chainsDoneFrame, restingFrame);
 
 		log.check(chainsDoneFrame > 0, "chains finished before timeout");
+		log.check(chain_position_stable, "chain placement does not drift in XZ");
+		log.check(chain_angles_level, "chain placement clears stale crash pitch and roll");
 		log.check(g_gameState.touching_road, "car is touching road at end");
 		log.check(restingFrame > 0, "car came into contact with road during sequence");
 
@@ -294,6 +310,7 @@ namespace
 			}
 			if (g_gameState.off_map_status > maxOffMap)
 				maxOffMap = g_gameState.off_map_status;
+			const bool grounded = g_gameState.touching_road != 0;
 
 			if (g_gameState.player_current_piece != prevPiece)
 			{
@@ -304,7 +321,6 @@ namespace
 				visitedHalfway = true;
 
 			// Jump detection: edge-trigger on grounded->airborne and airborne->grounded.
-			const bool grounded = g_gameState.touching_road != 0;
 			if (wasGrounded && !grounded)
 			{
 				takeoffFrame = i;
@@ -339,7 +355,7 @@ namespace
 
 			// Stop the test once the car has clearly escaped the track - no point
 			// running thousands more frames of free-fall.
-			if (g_gameState.off_map_status > GameState::OFF_TRACK_LIMIT)
+			if (g_gameState.off_track_count > GameState::OFF_TRACK_LIMIT)
 				break;
 		}
 
@@ -415,6 +431,46 @@ namespace
 			log.log("    z=%2d  %s\n", z, row);
 		}
 	}
+
+	void TestStraightSegmentSelection(Logger& log, const int trackId)
+	{
+		if (!ConvertAmigaTrack(g_trackState, trackId))
+		{
+			log.check(false, "track loaded for segment selection");
+			return;
+		}
+
+		bool all_segments_selected = true;
+		for (int piece = 0; piece < g_trackState.NumTrackPieces; ++piece)
+		{
+			const auto& track_piece = g_trackState.Track[piece];
+			if (track_piece.type & 0x80)
+				continue;
+
+			const double piece_x = track_piece.x * WORLD_CUBE_SIZE;
+			const double piece_z = track_piece.z * WORLD_CUBE_SIZE;
+			for (int segment = 0; segment < track_piece.numSegments; ++segment)
+			{
+				const int offset = segment * 4;
+				const double x = piece_x +
+					(track_piece.coords[offset].x + track_piece.coords[offset + 1].x +
+					 track_piece.coords[offset + 4].x + track_piece.coords[offset + 5].x) / 4.0;
+				const double z = piece_z +
+					(track_piece.coords[offset].z + track_piece.coords[offset + 1].z +
+					 track_piece.coords[offset + 4].z + track_piece.coords[offset + 5].z) / 4.0;
+				g_gameState.player_x = x;
+				g_gameState.player_z = z;
+				g_gameState.player_current_piece = piece;
+				CalculatePlayersRoadPosition(g_trackState, g_gameState);
+				all_segments_selected = all_segments_selected &&
+					g_gameState.player_current_piece == piece &&
+					g_gameState.player_current_segment == segment;
+			}
+		}
+
+		log.check(all_segments_selected,
+		          "straight road samples use the containing segment");
+	}
 } // namespace
 
 
@@ -436,6 +492,9 @@ int AppRunTests()
 	// starting pieces; the bug we are chasing only manifests on those.
 	for (int t = 0; t < NUM_TRACKS; ++t)
 		TestChainDropOntoTrack(log, t);
+
+	for (int t = 0; t < NUM_TRACKS; ++t)
+		TestStraightSegmentSelection(log, t);
 
 	// Drive a lap on every track.
 	for (int t = 0; t < NUM_TRACKS; ++t)

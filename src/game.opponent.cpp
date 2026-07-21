@@ -241,7 +241,7 @@ static void CalculateDistancesBetweenPlayers(const TrackState& t, GameState& pla
 static void OpponentPlayerInteraction(const TrackState& t, GameState& player);
 static void MoveOpponentToOneSide();
 static void OpponentPushPlayer(const GameState& player);
-static void CarToCarCollisionDetection(GameState& player);
+static bool CarToCarCollisionDetection(GameState& player);
 void CarToCarCollision(GameState& player, const SoundState& sound);
 
 static void ResetOpponent(GameState& game)
@@ -964,7 +964,7 @@ static void AdjustOpponentsEngineAcceleration(const GameState& game, const Track
 		return; // Value is -2 or -1
 
 	opponents_required_z_speed_reached = false;
-	opponents_engine_z_acceleration <<= 1;
+	opponents_engine_z_acceleration *= 2;
 }
 
 // Tested against Amiga
@@ -1108,12 +1108,12 @@ static int32_t cars_collided;
 static double car_to_car_x_acceleration, car_to_car_y_acceleration, car_to_car_z_acceleration;
 
 
-static void CarToCarCollisionDetection(GameState& player)
+static bool CarToCarCollisionDetection(GameState& player)
 {
 	int32_t d0, d3;
 
 	if (!player.drop_start_done)
-		return;
+		return false;
 
 	// Y difference check (when at least one car is not touching road)
 	if (!opp_touching_road || !player.touching_road)
@@ -1131,8 +1131,7 @@ static void CarToCarCollisionDetection(GameState& player)
 
 		if (d0 >= 192)
 		{
-			collision_bounce_count = 3;
-			return;
+			return false;
 		}
 
 		if (collision_bounce_count)
@@ -1142,7 +1141,7 @@ static void CarToCarCollisionDetection(GameState& player)
 			if (d4 < 0)
 				d3 = -d3;
 
-			d3 <<= 4;
+			d3 *= 16;
 			car_to_car_y_acceleration = d3;
 		}
 	}
@@ -1179,6 +1178,7 @@ static void CarToCarCollisionDetection(GameState& player)
 	player.front_left_damage = std::min(player.front_left_damage + damage, 255);
 
 	player.damaged = 0x80;
+	return true;
 }
 
 static int32_t cars_collided_delay = 0;
@@ -1279,8 +1279,7 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 			const int32_t roadPosHigh = player.players_road_x_position >> 8;
 			if (roadPosHigh < 1 || (roadPosHigh == 1 && (player.players_road_x_position & 0xff) < 0x80))
 			{
-				CarToCarCollisionDetection(player);
-				collisionDetected = true;
+				collisionDetected = CarToCarCollisionDetection(player);
 			}
 		}
 

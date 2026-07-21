@@ -130,6 +130,7 @@ public:
 	void SetWorldMatrix(const Mat4& m);
 	void SetViewMatrix(const Mat4& m);
 	void SetProjectionMatrix(const Mat4& m);
+	void SetDepthBias(double bias);
 
 	void DrawTriangleList(const SWVertex* verts, int startVertex, int numTriangles, const SWTexture* tex);
 	void DrawIndexedTriangleList(const SWVertex* verts, const uint32_t* indices, int startIndex, int numTriangles,
@@ -137,6 +138,7 @@ public:
 
 	void DrawScreenTriangleFan(const Point2D* pts, int numPoints, uint32_t color);
 	void FillRect(int x1, int y1, int x2, int y2, uint32_t color);
+	void BlendRect(int x1, int y1, int x2, int y2, uint32_t color, uint8_t opacity);
 
 	void DrawGameText(int x, int y, std::wstring_view text, uint32_t color);
 	void DrawTextLargeCentered(int y, std::wstring_view text, uint32_t color);
@@ -188,6 +190,7 @@ private:
 	// with ndcZ < 0 (which would wrongly win every depth test and paint over
 	// closer geometry).
 	double m_nearClipW;
+	double m_depthBias;
 
 	void UpdateCombinedMatrix();
 };

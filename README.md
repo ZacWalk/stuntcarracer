@@ -1,6 +1,12 @@
 Stunt Car Racer game
 
+[![Build](https://github.com/ZacWalk/stuntcarracer/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/stuntcarracer/actions/workflows/build.yml)
+
 I used to love this game when I was a kid.
+
+## Screenshot
+
+![Stunt Car Racer running on Windows](stuntcarracer.png)
 
 ## About
 

@@ -272,7 +272,7 @@ struct TrackState
 wchar_t* GetTrackName(int32_t track);
 char GetPieceAngleAndTemplate(int32_t piece);
 int32_t ConvertAmigaTrack(TrackState& t, int32_t track);
-void FreeTrackData(const TrackState& t);
+void FreeTrackData(TrackState& t);
 void CreateTrackVertexBuffer(const TrackState& t);
 void FreeTrackVertexBuffer();
 void DrawTrack(const TrackState& t, GameModeType GameMode, SoftwareRenderer& r, int32_t playerCurrentPiece,
@@ -578,7 +578,7 @@ void FreeResources();
 
 bool SetupSoundBuffers(SoundState& s);
 void DestroySoundBuffers(SoundState& s);
-void FreeData(SoundState& s, const TrackState& t);
+void FreeData(SoundState& s, TrackState& t);
 
 void OnFrameMove(double fTime, const TrackState& t, const GameState& p);
 void OnFrameRender(const TrackState& t, GameModeType GameMode, double fTime);

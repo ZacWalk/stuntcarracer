@@ -121,7 +121,7 @@ SoftwareRenderer::SoftwareRenderer()
 	  m_matricesDirty(true),
 	  m_lightDir(Vec3Normalize(Vec3(0.3f, 0.8f, 0.5f))),
 	  m_ambientIntensity(0.45f), m_diffuseIntensity(0.55f),
-	  m_nearClipW(0.01f)
+	  m_nearClipW(0.01f), m_depthBias(0.0)
 {
 	m_world = Mat4::Identity();
 	m_view = Mat4::Identity();
@@ -209,6 +209,11 @@ void SoftwareRenderer::SetProjectionMatrix(const Mat4& m)
 		const double zn = (zAtNdc0 < zAtNdc1) ? zAtNdc0 : zAtNdc1;
 		m_nearClipW = zn > 0.0f ? zn * 1.001f : 0.01f;
 	}
+}
+
+void SoftwareRenderer::SetDepthBias(const double bias)
+{
+	m_depthBias = bias;
 }
 
 void SoftwareRenderer::UpdateCombinedMatrix()
@@ -457,15 +462,11 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 		rowW1 = -rowW1;
 		rowW2 = -rowW2;
 	}
-	rowW0 += bias0;
-	rowW1 += bias1;
-	rowW2 += bias2;
-
 	// Pre-compute per-pixel attribute increments (one-time cost per triangle)
 	double zStepX = (stepX0 * v0.z + stepX1 * v1.z + stepX2 * v2.z) * invArea;
 	double zStepY = (stepY0 * v0.z + stepY1 * v1.z + stepY2 * v2.z) * invArea;
 	double bary0 = rowW0 * invArea, bary1 = rowW1 * invArea, bary2 = rowW2 * invArea;
-	double zRow = bary0 * v0.z + bary1 * v1.z + bary2 * v2.z;
+	double zRow = bary0 * v0.z + bary1 * v1.z + bary2 * v2.z + m_depthBias;
 
 	// Hoist member fields into local __restrict pointers for the inner loop
 	uint32_t* __restrict pixels = m_pixels.data();
@@ -494,7 +495,7 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 
 		for (int py = iMinY; py <= iMaxY; py++)
 		{
-			double w0 = rowW0, w1 = rowW1, w2 = rowW2;
+			double w0 = rowW0 + bias0, w1 = rowW1 + bias1, w2 = rowW2 + bias2;
 			double z = zRow, u = uRow, v = vRow, iw = iwRow;
 			const int rowOff = py * scanWidth;
 
@@ -546,7 +547,7 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 
 		for (int py = iMinY; py <= iMaxY; py++)
 		{
-			double w0 = rowW0, w1 = rowW1, w2 = rowW2;
+			double w0 = rowW0 + bias0, w1 = rowW1 + bias1, w2 = rowW2 + bias2;
 			double z = zRow, rf = rRow, gf = gRow, bf = bRow;
 			const int rowOff = py * scanWidth;
 
@@ -783,6 +784,38 @@ void SoftwareRenderer::FillRect(int x1, int y1, int x2, int y2, const uint32_t c
 	{
 		const auto row = m_pixels.data() + y * m_width;
 		std::fill(row + x1, row + x2 + 1, dibColor);
+	}
+}
+
+void SoftwareRenderer::BlendRect(int x1, int y1, int x2, int y2, const uint32_t color, const uint8_t opacity)
+{
+	if (m_width <= 0 || m_height <= 0 || x1 > x2 || y1 > y2 || opacity == 0)
+		return;
+
+	x1 = (std::max)(0, (std::min)(x1, m_width - 1));
+	x2 = (std::max)(0, (std::min)(x2, m_width - 1));
+	y1 = (std::max)(0, (std::min)(y1, m_height - 1));
+	y2 = (std::max)(0, (std::min)(y2, m_height - 1));
+
+	const uint32_t source = ColorToDIB(color);
+	const uint32_t inverseOpacity = 255 - opacity;
+	for (int y = y1; y <= y2; ++y)
+	{
+		uint32_t* row = m_pixels.data() + y * m_width;
+		for (int x = x1; x <= x2; ++x)
+		{
+			const uint32_t destination = row[x];
+			uint32_t blended = 0;
+			for (int shift = 0; shift <= 16; shift += 8)
+			{
+				const uint32_t sourceChannel = source >> shift & 0xff;
+				const uint32_t destinationChannel = destination >> shift & 0xff;
+				const uint32_t channel =
+					(sourceChannel * opacity + destinationChannel * inverseOpacity + 127) / 255;
+				blended |= channel << shift;
+			}
+			row[x] = blended;
+		}
 	}
 }
 
