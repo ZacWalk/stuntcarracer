@@ -1113,7 +1113,11 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		t.Track[piece].coords = static_cast<COORD_3D*>(malloc(size));
 		t.Track[piece].coordsSize = size;
 		if (t.Track[piece].coords == nullptr)
+		{
+			FreeTrackData(t);
+			t.TrackID = NO_TRACK;
 			return false;
+		}
 
 		const COORD_XZ* pieceXZ = Piece_Templates[templateNum].pieceXZ;
 
@@ -1247,12 +1251,17 @@ static COORD_XZ GetRotatedPieceXZ(const COORD_XZ coord,
 	}
 }
 
-void FreeTrackData(const TrackState& t)
+void FreeTrackData(TrackState& t)
 {
 	for (int32_t piece = 0; piece < t.NumTrackPieces; piece++)
 	{
 		free(t.Track[piece].coords);
+		t.Track[piece].coords = nullptr;
+		t.Track[piece].coordsSize = 0;
 	}
+	t.NumTrackPieces = 0;
+	t.NumTrackSegments = 0;
+	t.TrackID = NO_TRACK;
 }
 
 static void ConvertAmigaPieceData(void)
@@ -1406,6 +1415,14 @@ static Vec3 GetPieceVertex(const TrackState& t, const int32_t piece, const doubl
 	x += piece_x;
 	y += piece_y;
 	z += piece_z;
+
+	// Adjacent pieces reconstruct a shared endpoint from different local cube
+	// coordinates. Canonicalize the world position so both sides of the join
+	// reach the rasterizer with bit-identical screen-space edges.
+	constexpr double vertexGrid = 1024.0;
+	x = std::round(x * vertexGrid) / vertexGrid;
+	y = std::round(y * vertexGrid) / vertexGrid;
+	z = std::round(z * vertexGrid) / vertexGrid;
 
 	return Vec3(x, y, z);
 }
@@ -1632,7 +1649,6 @@ void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRendere
 	else //	GAME_IN_PROGRESS or GAME_OVER
 	{
 		// Draw track with road lines
-		int32_t lastTexturedSegment;
 		constexpr int32_t indicesPerSegment = 6; // 2 triangles × 3 indices
 
 		// 1) Draw left and right sides untextured
@@ -1641,51 +1657,45 @@ void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRendere
 
 		v = PieceFirstIndex[RIGHT_SIDE][0];
 		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, t.NumTrackSegments * 2, {});
+		// Road and side-wall top edges are intentionally coplanar. Pull the road
+		// forward by a tiny reversed-Z amount so depth ties resolve consistently.
+		r.SetDepthBias(1e-7);
 
-		// 2) Draw first part of road untextured
-		int32_t firstTexturedSegment = lastTexturedSegment = t.Track[playerCurrentPiece].firstSegment +
-			playerCurrentSegment;
-		firstTexturedSegment -= TEXTURED_SEGMENTS_AROUND_PLAYER;
-		lastTexturedSegment += TEXTURED_SEGMENTS_AROUND_PLAYER;
+		const int32_t roadFirstIndex = PieceFirstIndex[ROAD][0];
+		const int32_t texturedCount = std::min(t.NumTrackSegments, TEXTURED_SEGMENTS_AROUND_PLAYER * 2 + 1);
+		const int32_t centreSegment = t.Track[playerCurrentPiece].firstSegment + playerCurrentSegment;
+		const int32_t firstTexturedSegment =
+			(centreSegment - TEXTURED_SEGMENTS_AROUND_PLAYER + t.NumTrackSegments) % t.NumTrackSegments;
 
-		v = PieceFirstIndex[ROAD][0]; // first road index
-		if (firstTexturedSegment > 0)
+		// Draw the complementary circular range untextured, splitting at segment zero.
+		const int32_t untexturedCount = t.NumTrackSegments - texturedCount;
+		const int32_t firstUntexturedSegment = (firstTexturedSegment + texturedCount) % t.NumTrackSegments;
+		const int32_t untexturedBeforeWrap = std::min(untexturedCount, t.NumTrackSegments - firstUntexturedSegment);
+		if (untexturedBeforeWrap > 0)
 		{
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, firstTexturedSegment * 2, {});
-			segmentsRendered += firstTexturedSegment;
+			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices,
+				roadFirstIndex + firstUntexturedSegment * indicesPerSegment, untexturedBeforeWrap * 2, {});
 		}
-
-
-		const int32_t count = lastTexturedSegment - firstTexturedSegment + 1;
-
-		// Limit first and last to track boundaries
-		if (firstTexturedSegment < 0)
-			firstTexturedSegment += t.NumTrackSegments;
-
-		if (lastTexturedSegment >= t.NumTrackSegments)
-			lastTexturedSegment -= t.NumTrackSegments;
+		if (untexturedCount > untexturedBeforeWrap)
+		{
+			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, roadFirstIndex,
+				(untexturedCount - untexturedBeforeWrap) * 2, {});
+		}
 
 		int32_t s = firstTexturedSegment;
-		v += s * indicesPerSegment;
-		for (int32_t i = 0; i < count; i++, s++, v += indicesPerSegment)
+		for (int32_t i = 0; i < texturedCount; i++, s++)
 		{
 			if (s == t.NumTrackSegments)
-			{
 				s = 0;
-				v = PieceFirstIndex[ROAD][0];
-			}
 
 			// Setup texture
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, 2, &roadTextures[SegmentRoadTexture[s]]);
+			const size_t textureIndex = SegmentRoadTexture[s];
+			const SWTexture* texture = textureIndex < roadTextures.size() ? &roadTextures[textureIndex] : nullptr;
+			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices,
+				roadFirstIndex + s * indicesPerSegment, 2, texture);
 			segmentsRendered++;
 		}
-
-
-		if (segmentsRendered < t.NumTrackSegments)
-		{
-			s = t.NumTrackSegments - segmentsRendered;
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, s * 2, {});
-		}
+		r.SetDepthBias(0.0);
 	}
 
 	/* Finally draw the opponent's car shadow */

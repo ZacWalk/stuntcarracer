@@ -31,6 +31,7 @@ static IDirectSound8* s_ds = nullptr;
 static HMENU g_hMenu = nullptr;
 static HACCEL g_hAccel = nullptr;
 static std::vector<MenuCommand> g_menuDef;
+static bool g_windowMinimized = false;
 
 // ── Timer ──────────────────────────────────────────────────────────────────────
 
@@ -144,37 +145,58 @@ void PlatformShowError(const std::wstring_view message, const std::wstring_view 
 
 // ── Sound — WAV resource helpers ───────────────────────────────────────────────
 
-static void* GetWAVResource(const HMODULE hModule, const std::wstring_view name)
+struct WAVResource
+{
+	const BYTE* data;
+	size_t size;
+};
+
+static std::optional<WAVResource> GetWAVResource(const HMODULE hModule, const std::wstring_view name)
 {
 	const HRSRC hRes = FindResource(hModule, name.data(), L"WAVE");
-	if (!hRes) return nullptr;
+	if (!hRes) return std::nullopt;
 
 	const HGLOBAL hData = LoadResource(hModule, hRes);
-	if (!hData) return nullptr;
+	if (!hData) return std::nullopt;
 
-	return LockResource(hData);
+	const auto data = static_cast<const BYTE*>(LockResource(hData));
+	const DWORD size = SizeofResource(hModule, hRes);
+	if (!data || size == 0) return std::nullopt;
+	return WAVResource{data, size};
 }
 
-static BOOL UnpackWAVChunk(void* pRIFF, LPWAVEFORMATEX* ppFormat, LPBYTE* ppData, DWORD* pDataSize)
+static DWORD ReadResourceDword(const BYTE* data)
+{
+	DWORD value;
+	CopyMemory(&value, data, sizeof(value));
+	return value;
+}
+
+static BOOL UnpackWAVChunk(const WAVResource resource, LPWAVEFORMATEX* ppFormat, LPBYTE* ppData,
+	DWORD* pDataSize)
 {
 	if (ppFormat) *ppFormat = nullptr;
 	if (ppData) *ppData = nullptr;
 	if (pDataSize) *pDataSize = 0;
 
-	auto ptr = static_cast<DWORD*>(pRIFF);
-	const DWORD chunkID = *ptr++;
-	DWORD length = *ptr++;
-	DWORD type = *ptr++;
+	if (resource.size < 12) return FALSE;
+	const DWORD chunkID = ReadResourceDword(resource.data);
+	const DWORD riffLength = ReadResourceDword(resource.data + 4);
+	DWORD type = ReadResourceDword(resource.data + 8);
 
 	if (chunkID != mmioFOURCC('R', 'I', 'F', 'F') || type != mmioFOURCC('W', 'A', 'V', 'E'))
 		return FALSE;
+	if (riffLength < 4 || riffLength > resource.size - 8) return FALSE;
 
-	const auto end = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(ptr) + length - 4);
-
-	while (ptr < end)
+	const size_t end = static_cast<size_t>(riffLength) + 8;
+	size_t offset = 12;
+	while (offset + 8 <= end)
 	{
-		type = *ptr++;
-		length = *ptr++;
+		type = ReadResourceDword(resource.data + offset);
+		const DWORD length = ReadResourceDword(resource.data + offset + 4);
+		offset += 8;
+		if (length > end - offset) return FALSE;
+		const BYTE* chunkData = resource.data + offset;
 
 		if (type == mmioFOURCC('f', 'm', 't', ' '))
 		{
@@ -182,7 +204,7 @@ static BOOL UnpackWAVChunk(void* pRIFF, LPWAVEFORMATEX* ppFormat, LPBYTE* ppData
 			{
 				if (length < sizeof(WAVEFORMAT))
 					return FALSE;
-				*ppFormat = reinterpret_cast<LPWAVEFORMATEX>(ptr);
+				*ppFormat = reinterpret_cast<LPWAVEFORMATEX>(const_cast<BYTE*>(chunkData));
 				if ((!ppData || *ppData) && (!pDataSize || *pDataSize))
 					return TRUE;
 			}
@@ -191,15 +213,16 @@ static BOOL UnpackWAVChunk(void* pRIFF, LPWAVEFORMATEX* ppFormat, LPBYTE* ppData
 		{
 			if ((ppData && !*ppData) || (pDataSize && !*pDataSize))
 			{
-				if (ppData) *ppData = reinterpret_cast<LPBYTE>(ptr);
+				if (ppData) *ppData = const_cast<LPBYTE>(chunkData);
 				if (pDataSize) *pDataSize = length;
 				if (!ppFormat || *ppFormat)
 					return TRUE;
 			}
 		}
 
-		// Advance to next WORD-aligned chunk
-		ptr = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(ptr) + (length + 1 & ~1));
+		const size_t paddedLength = static_cast<size_t>(length) + (length & 1u);
+		if (paddedLength > end - offset) return FALSE;
+		offset += paddedLength;
 	}
 
 	return FALSE;
@@ -225,21 +248,26 @@ static BOOL WriteWAVToBuffer(IDirectSoundBuffer* pBuf, const LPBYTE pWaveData, c
 
 static IDirectSoundBuffer* CreateSoundBuffer(IDirectSound8* ds, const std::wstring_view name)
 {
-	void* pRIFF = GetWAVResource(nullptr, name);
-	if (!pRIFF) return nullptr;
+	const auto resource = GetWAVResource(nullptr, name);
+	if (!resource) return nullptr;
 
 	DSBUFFERDESC desc = {};
 	desc.dwSize = sizeof(desc);
 	desc.dwFlags = DSBCAPS_CTRLFREQUENCY | DSBCAPS_CTRLPAN | DSBCAPS_CTRLVOLUME;
 
 	LPBYTE pWaveData = nullptr;
-	UnpackWAVChunk(pRIFF, &desc.lpwfxFormat, &pWaveData, &desc.dwBufferBytes);
+	if (!UnpackWAVChunk(*resource, &desc.lpwfxFormat, &pWaveData, &desc.dwBufferBytes))
+		return nullptr;
 
 	IDirectSoundBuffer* pBuf = nullptr;
 	if (ds->CreateSoundBuffer(&desc, &pBuf, nullptr) != DS_OK)
 		return nullptr;
 
-	WriteWAVToBuffer(pBuf, pWaveData, desc.dwBufferBytes);
+	if (!WriteWAVToBuffer(pBuf, pWaveData, desc.dwBufferBytes))
+	{
+		pBuf->Release();
+		return nullptr;
+	}
 	return pBuf;
 }
 
@@ -438,7 +466,9 @@ LRESULT CALLBACK WndProc(const HWND hWnd, const UINT uMsg, const WPARAM wParam, 
 		return 0;
 
 	case WM_KEYDOWN:
-		AppHandleKeyDown(static_cast<uint32_t>(wParam));
+		if ((lParam & (1LL << 30)) == 0 || wParam == VK_LEFT || wParam == VK_RIGHT ||
+			wParam == VK_UP || wParam == VK_DOWN || wParam == VK_CONTROL)
+			AppHandleKeyDown(static_cast<uint32_t>(wParam));
 		return 0;
 
 	case WM_KEYUP:
@@ -454,6 +484,7 @@ LRESULT CALLBACK WndProc(const HWND hWnd, const UINT uMsg, const WPARAM wParam, 
 		return 0;
 
 	case WM_SIZE:
+		g_windowMinimized = wParam == SIZE_MINIMIZED;
 		if (wParam != SIZE_MINIMIZED)
 		{
 			const int clientW = LOWORD(lParam);
@@ -461,6 +492,11 @@ LRESULT CALLBACK WndProc(const HWND hWnd, const UINT uMsg, const WPARAM wParam, 
 			if (clientW > 0 && clientH > 0)
 				AppHandleFrameSize(clientW, clientH);
 		}
+		return 0;
+
+	case WM_ACTIVATEAPP:
+		if (!wParam)
+			AppResetInput();
 		return 0;
 
 	case WM_DESTROY:
@@ -541,7 +577,11 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	if (!g_hWnd)
 		return 1;
 
-	AppInit();
+	if (!AppInit())
+	{
+		DestroyWindow(g_hWnd);
+		return 1;
+	}
 	g_hAccel = CreateGameAccelerators();
 
 	ShowWindow(g_hWnd, nCmdShow);
@@ -571,6 +611,11 @@ bool PlatformEvents()
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 		}
+	}
+	if (g_windowMinimized)
+	{
+		AppResetInput();
+		WaitMessage();
 	}
 	return true;
 }

@@ -23,6 +23,7 @@ using namespace std::string_view_literals;
 
 
 constexpr int32_t DEFAULT_FRAME_GAP = 4;
+constexpr double SIMULATION_STEP_SECONDS = 1.0 / 25.0;
 
 // Inside-view camera height above the car body, in render-space world units.
 // The original 100 sat the eye very close to the road; combined with
@@ -100,6 +101,7 @@ static double render_x_angle = 0;
 static double render_z_angle = 0;
 
 // Render-only car height (world-space, +Y up) used by SetCarWorldTransform.
+static double render_wheel_y[4] = {};
 // When grounded it is anchored to the road plane sampled under the wheels so
 // the visible car sits flush with the track instead of following the lagged
 // physics player_y (which is allowed to sink up to MAX_BELOW_ROAD into the
@@ -134,9 +136,9 @@ static void UpdateRenderAngles()
 	double target_z_angle = player1_z_angle;
 
 	const bool grounded = g_gameState.touching_road &&
-		g_gameState.front_left_road_height < GameState::OFF_ROAD_HEIGHT &&
-		g_gameState.front_right_road_height < GameState::OFF_ROAD_HEIGHT &&
-		g_gameState.rear_road_height < GameState::OFF_ROAD_HEIGHT;
+		g_gameState.front_left_road_height != GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.front_right_road_height != GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.rear_road_height != GameState::OFF_ROAD_HEIGHT;
 
 	if (grounded)
 	{
@@ -148,35 +150,77 @@ static void UpdateRenderAngles()
 		const double pitch_sin = (front_avg_road - g_gameState.rear_road_height) / 4096.0;
 		const double roll_sin =
 			(g_gameState.front_left_road_height - g_gameState.front_right_road_height) / 2048.0;
-		target_x_angle = WrapAngle(AngleFromSin(pitch_sin));
-		target_z_angle = WrapAngle(AngleFromSin(roll_sin));
+		// DrawWorld uses the opposite X/Z rotation convention from the physics
+		// coefficients, just as CarBehaviour's returned airborne angles do.
+		target_x_angle = WrapAngle(-AngleFromSin(pitch_sin));
+		target_z_angle = WrapAngle(-AngleFromSin(roll_sin));
 	}
 
-	// Shortest-path lerp toward target with a moderate time constant.
-	constexpr double kSmoothingFactor = 0.25; // 1/4 step per frame; ~4 frames to settle
-	const double dx = WrapAngleSigned(target_x_angle - render_x_angle);
-	const double dz = WrapAngleSigned(target_z_angle - render_z_angle);
-	render_x_angle = WrapAngle(render_x_angle + dx * kSmoothingFactor);
-	render_z_angle = WrapAngle(render_z_angle + dz * kSmoothingFactor);
+	if (g_gameState.on_chains)
+	{
+		// A respawn is a new placement, not a continuation of the crash pose.
+		render_x_angle = target_x_angle;
+		render_z_angle = target_z_angle;
+	}
+	else
+	{
+		// Shortest-path lerp toward target with a moderate time constant.
+		constexpr double kSmoothingFactor = 0.25; // 1/4 step per frame; ~4 frames to settle
+		const double dx = WrapAngleSigned(target_x_angle - render_x_angle);
+		const double dz = WrapAngleSigned(target_z_angle - render_z_angle);
+		render_x_angle = WrapAngle(render_x_angle + dx * kSmoothingFactor);
+		render_z_angle = WrapAngle(render_z_angle + dz * kSmoothingFactor);
+	}
 
-	// Drive the render-only car height. When grounded, anchor the wheel-contact
-	// plane to the road centroid sampled under the wheels (road_height units,
-	// positive-up; /16 -> render-Y). The mesh's wheel bottoms sit VCAR_HEIGHT/4
-	// below the model origin, so lifting by that amount places the wheels on the
-	// road. This matches the old flat-ground constant (VCAR_HEIGHT*3/8 combined
-	// with the spring equilibrium) but tracks slopes and landings without the
-	// physics penetration lag that let tilted car corners poke through the road.
+	// Drive the render-only car height. When grounded, place the origin high
+	// enough for every transformed wheel-bottom point to clear its road sample.
 	// When airborne, fall back to the physics height with the original offset.
 	if (grounded)
 	{
-		const double front_avg_road =
-			(g_gameState.front_left_road_height + g_gameState.front_right_road_height) / 2;
-		const double contact_road = (front_avg_road + g_gameState.rear_road_height) / 2;
-		render_car_y = contact_road / 16.0 + VCAR_HEIGHT / 4;
+		const double x_angle = render_x_angle * ANGLE_TO_RADIANS;
+		const double z_angle = render_z_angle * ANGLE_TO_RADIANS;
+		const double sin_x = std::sin(x_angle);
+		const double cos_x = std::cos(x_angle);
+		const double sin_z = std::sin(z_angle);
+		const double cos_z = std::cos(z_angle);
+
+		// The visual pitch/roll deliberately lags the road plane. At an abrupt
+		// ramp transition, centring the model on the average road height lets
+		// its still-level front wheels pass below the rising road. Choose the
+		// origin height required by the highest of the three wheel-bottom points,
+		// transformed in the same Z-then-X order as SetCarWorldTransform.
+		auto requiredOrigin = [&](const double road_height, const double x, const double z)
+		{
+			constexpr double wheel_bottom_y = -VCAR_HEIGHT / 4.0;
+			const double after_z_y = x * sin_z + wheel_bottom_y * cos_z;
+			const double rotated_y = after_z_y * cos_x - z * sin_x;
+			return road_height / 16.0 - rotated_y;
+		};
+
+		const double rear_left_origin = requiredOrigin(
+			g_gameState.rear_road_height, -VCAR_WIDTH * 3.0 / 8.0, -VCAR_LENGTH / 2.0);
+		const double rear_right_origin = requiredOrigin(
+			g_gameState.rear_road_height, VCAR_WIDTH * 3.0 / 8.0, -VCAR_LENGTH / 2.0);
+		const double front_right_origin = requiredOrigin(
+			g_gameState.front_right_road_height, VCAR_WIDTH * 3.0 / 8.0, VCAR_LENGTH / 2.0);
+		const double front_left_origin = requiredOrigin(
+			g_gameState.front_left_road_height, -VCAR_WIDTH * 3.0 / 8.0, VCAR_LENGTH / 2.0);
+		constexpr double visualRideClearance = 2.0;
+		render_car_y = std::max({rear_left_origin, rear_right_origin, front_right_origin, front_left_origin}) +
+			visualRideClearance;
+
+		constexpr double maxSuspensionDrop = 14.0;
+		const double wheelOrigins[] = {
+			rear_left_origin, rear_right_origin, front_left_origin, front_right_origin
+		};
+		for (int wheel = 0; wheel < 4; ++wheel)
+			render_wheel_y[wheel] = std::clamp(wheelOrigins[wheel] - render_car_y,
+				-maxSuspensionDrop, 0.0);
 	}
 	else
 	{
 		render_car_y = -player1_y + VCAR_HEIGHT * 3 / 8;
+		std::fill(std::begin(render_wheel_y), std::end(render_wheel_y), 0.0);
 	}
 }
 
@@ -186,7 +230,7 @@ void InitialiseData(TrackState& t)
 	srand(static_cast<unsigned>(std::time(nullptr)));
 }
 
-void FreeData(SoundState& s, const TrackState& t)
+void FreeData(SoundState& s, TrackState& t)
 {
 	FreeTrackData(t);
 	DestroySoundBuffers(s);
@@ -271,11 +315,15 @@ void CreateResources()
 		L"RoadRedDark", L"RoadRedLight",
 		L"RoadBlack", L"RoadWhite"
 	};
-	for (const auto name : roadTexNames)
+	g_roadTexture.clear();
+	g_roadTexture.resize(std::size(roadTexNames));
+	for (size_t i = 0; i < std::size(roadTexNames); ++i)
 	{
-		const auto bmp = PlatformLoadBitmapResource(name);
+		const auto bmp = PlatformLoadBitmapResource(roadTexNames[i]);
 		if (bmp)
-			g_roadTexture.emplace_back(SWTexture{bmp->pixels, bmp->width, bmp->height});
+			g_roadTexture[i] = SWTexture{bmp->pixels, bmp->width, bmp->height};
+		else
+			PlatformShowError(format(L"Failed to load road texture: %ls", roadTexNames[i].data()), L"Warning");
 	}
 
 	// Set projection transform
@@ -364,11 +412,7 @@ static void CalcGameViewpoint()
 {
 	if (bOutsideView)
 	{
-		// Trailing camera: keep the camera level (no pitch / roll) so the
-		// horizon stays flat regardless of how the car is tilted. Only yaw
-		// follows the car. The car body itself is rendered with road-aligned
-		// pitch/roll via SetCarWorldTransform so it still sits flush with
-		// the track.
+		// Trailing camera: keep the camera level so the horizon remains stable.
 		const auto rot = CalcYXZTrigCoefficients(0,
 		                                         player1_y_angle,
 		                                         0);
@@ -401,11 +445,22 @@ static void CalcGameViewpoint()
 		// the eye free to dive through the higher side.
 		// Skip the clamp when every sample is the off-road sentinel (car is in
 		// the void), otherwise it would shove the eye absurdly high.
-		const double fl = g_gameState.front_left_road_height;
-		const double fr = g_gameState.front_right_road_height;
-		const double rr = g_gameState.rear_road_height;
-		const double road_height = std::max({fl, fr, rr});
-		if (road_height > GameState::OFF_ROAD_HEIGHT)
+		const double road_heights[] = {
+			g_gameState.front_left_road_height,
+			g_gameState.front_right_road_height,
+			g_gameState.rear_road_height
+		};
+		double road_height = 0;
+		bool road_found = false;
+		for (const double sample : road_heights)
+		{
+			if (sample != GameState::OFF_ROAD_HEIGHT && (!road_found || sample > road_height))
+			{
+				road_height = sample;
+				road_found = true;
+			}
+		}
+		if (road_found)
 		{
 			// road_height is in road_height units (256-per-render-Y). The matching
 			// render-space external y is -road_height / 16.
@@ -423,6 +478,8 @@ static void CalcGameViewpoint()
 }
 
 static Mat4 matWorldTrack, matWorldCar, matWorldOpponentsCar;
+static Mat4 matWorldCarWheels[4];
+static void DrawPlayerCar(SoftwareRenderer& r);
 
 static void SetCarWorldTransform()
 {
@@ -445,6 +502,11 @@ static void SetCarWorldTransform()
 	                                      render_car_y,
 	                                      player1_z);
 	matWorldCar = Mat4Multiply(matRot, matTrans);
+	for (int wheel = 0; wheel < 4; ++wheel)
+	{
+		const Mat4 suspension = Mat4Translation(0.0, render_wheel_y[wheel], 0.0);
+		matWorldCarWheels[wheel] = Mat4Multiply(suspension, matWorldCar);
+	}
 }
 
 static void SetOpponentsCarWorldTransform()
@@ -476,7 +538,6 @@ static void StopEngineSound()
 
 void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /*p*/)
 {
-	static int32_t frameCount = 0;
 	const uint32_t input = lastInput; // take copy of user input
 
 	bFrameMoved = false;
@@ -495,25 +556,13 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 	if (t.TrackID == NO_TRACK)
 		return;
 
-	// Track preview and game mode run at reduced frame rate
+	// Track preview and game mode run on the fixed simulation clock.
 	if (g_gameMode == TRACK_PREVIEW || g_gameMode == GAME_IN_PROGRESS)
 	{
 		if (g_gameMode == GAME_IN_PROGRESS)
 		{
-			// Following function should run at 50Hz
+			// Advance engine and wheel state once per fixed simulation tick.
 			if (!bPaused) FramesWheelsEngine(g_soundState, g_soundState.EngineSoundBuffers);
-		}
-
-		if (frameCount > 0)
-			--frameCount;
-
-		if (frameCount == 0)
-		{
-			frameCount = frameGap;
-		}
-		else
-		{
-			return;
 		}
 	}
 	else if (g_gameMode == TRACK_MENU)
@@ -652,12 +701,28 @@ static void SelectTrack()
 void RenderText(const double /*fTime*/, const TrackState& track, const GameState& game,
                 const GameModeType GameMode)
 {
+	const int screenW = g_renderer.GetWidth();
 	const int screenH = g_renderer.GetHeight();
 	constexpr uint32_t textColor = XRGB(255, 255, 0);
+	constexpr int textWidth = 8;
+	constexpr int textHeight = 8;
+	constexpr int hudPadding = 8;
+	constexpr int hudRowHeight = 14;
+
+	auto drawTextRightAligned = [&](const int right, const int y, const std::wstring_view text, const uint32_t color)
+	{
+		g_renderer.DrawGameText(right - static_cast<int>(text.size()) * textWidth, y, text, color);
+	};
+
+	auto drawTextCentered = [&](const int y, const std::wstring_view text, const uint32_t color)
+	{
+		const int width = static_cast<int>(text.size()) * textWidth;
+		g_renderer.DrawGameText((screenW - width) / 2, y, text, color);
+	};
 
 	if (bShowStats)
 	{
-		g_renderer.DrawGameText(2, 0, L"Version 1.0", textColor);
+		g_renderer.DrawGameText(hudPadding, 4, L"Version 1.0", textColor);
 	}
 
 	switch (GameMode)
@@ -677,22 +742,47 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 	case GAME_OVER:
 		{
 			wchar_t lapText[3] = L"  ";
+			std::wstring_view title;
+			uint32_t titleColor = textColor;
 
 			// Output opponent's name for four seconds at race start
 			if (PlatformGetTime() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
 			{
-				const auto op = format(L"Opponent: %s", GetOpponentName(game.opponentsID));
-				g_renderer.DrawTextLargeCentered(10, op, textColor);
+				title = GetOpponentName(game.opponentsID);
 			}
 			if (game.lapNumber[PLAYER] > 0)
 				swprintf_s(lapText, 3, L"%d", game.lapNumber[PLAYER]);
-			g_renderer.DrawGameText(2, screenH - 15 * 2, format(L"Lap: %s   Boost: %d", lapText,
-			                                                    game.boostReserve), textColor);
-			g_renderer.DrawGameText(2, screenH - 15 * 1, format(L"Opponent Distance: %d",
-			                                                    CalculateOpponentsDistance(game)), textColor);
-			g_renderer.DrawGameText(280, screenH - 15 * 2, format(L"Speed: %d", CalculateDisplaySpeed(g_gameState)),
-			                        textColor);
-			g_renderer.DrawGameText(280, screenH - 15 * 1, format(L"Damage: %d", game.new_damage), textColor);
+
+			const bool compactHud = screenW < 480;
+			const auto lapBoost = compactHud
+				? format(L"Lap %s  Boost %d", lapText, game.boostReserve)
+				: format(L"Lap: %s   Boost: %d", lapText, game.boostReserve);
+			const auto opponentDistance = compactHud
+				? format(L"Opp. distance %d", CalculateOpponentsDistance(game))
+				: format(L"Opponent Distance: %d", CalculateOpponentsDistance(game));
+			const auto speed = format(compactHud ? L"Speed %d" : L"Speed: %d", CalculateDisplaySpeed(g_gameState));
+			const auto damage = format(compactHud ? L"Damage %d" : L"Damage: %d", game.new_damage);
+
+			const int hudRows = compactHud ? 4 : 2;
+			const int hudHeight = hudPadding * 2 + hudRows * hudRowHeight - (hudRowHeight - textHeight);
+			const int hudTop = screenH - hudHeight;
+			g_renderer.BlendRect(0, hudTop, screenW - 1, screenH - 1, XRGB(0, 0, 0), 128);
+
+			if (compactHud)
+			{
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding, lapBoost, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight, opponentDistance, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight * 2, speed, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight * 3, damage, textColor);
+			}
+			else
+			{
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding, lapBoost, textColor);
+				drawTextRightAligned(screenW - hudPadding, hudTop + hudPadding, speed, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight, opponentDistance, textColor);
+				drawTextRightAligned(screenW - hudPadding, hudTop + hudPadding + hudRowHeight, damage, textColor);
+			}
+
 			if (game.raceFinished)
 			{
 				const double currentTime = PlatformGetTime();
@@ -701,28 +791,27 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 
 				const double diffTime = currentTime - gameEndTime;
 
-				uint32_t bigTextColor;
 				if (GameMode == GAME_OVER)
 				{
-					bigTextColor = XRGB(255, 255, 0);
-					g_renderer.DrawGameText(124, screenH - 25 * 12,
-					                        L"GAME OVER: Use Game menu to return to track menu",
-					                        bigTextColor);
+					title = L"GAME OVER";
+					drawTextCentered(30, screenW >= 360
+						? L"Use Game menu to return to track menu"
+						: L"Use Game menu to return", textColor);
 				}
 				else
 				{
 					const int32_t intTime = static_cast<int32_t>(diffTime);
 					if (diffTime - static_cast<double>(intTime) < 0.5)
-						bigTextColor = XRGB(255, 255, 255);
+						titleColor = XRGB(255, 255, 255);
 					else
-						bigTextColor = XRGB(0, 0, 0);
+						titleColor = XRGB(0, 0, 0);
 
-					if (game.raceWon)
-						g_renderer.DrawGameText(250, screenH - 25 * 12, L"RACE WON", bigTextColor);
-					else
-						g_renderer.DrawGameText(250, screenH - 25 * 12, L"RACE LOST", bigTextColor);
+					title = game.raceWon ? L"RACE WON" : L"RACE LOST";
 				}
 			}
+
+			if (!title.empty())
+				g_renderer.DrawTextLargeCentered(10, title, titleColor);
 		}
 		break;
 	}
@@ -761,8 +850,7 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 		if (bOutsideView)
 		{
 			// Draw Player1's Car
-			g_renderer.SetWorldMatrix(matWorldCar);
-			DrawCar(g_renderer);
+			DrawPlayerCar(g_renderer);
 		}
 		break;
 	}
@@ -893,6 +981,12 @@ void AppHandleKeyUp(const uint32_t nChar)
 	}
 }
 
+void AppResetInput()
+{
+	lastInput = 0;
+	ctrlHeld = false;
+}
+
 // Sound buffer setup — creates all game sound buffers using platform API
 bool SetupSoundBuffers(SoundState& s)
 {
@@ -965,8 +1059,14 @@ void DestroySoundBuffers(SoundState& s)
 		PlatformDeleteSoundBuffer(s.EngineSoundBuffers[i]);
 }
 
-void AppInit()
+bool AppInit()
 {
+	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
+	{
+		PlatformShowError(L"Failed to initialize renderer", L"Error");
+		return false;
+	}
+
 	// Build menu definition and create menus
 
 	auto sep = [] { return MenuCommand{}; };
@@ -1172,29 +1272,40 @@ void AppInit()
 			PlatformShowError(L"Failed to set up sound buffers", L"Warning");
 		}
 	}
+	return true;
 }
 
 void AppRun()
 {
-	// Create software renderer
-	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
-	{
-		PlatformShowError(L"Failed to initialize renderer", L"Error");
-		return;
-	}
+	double previousTime = PlatformGetTime();
+	double simulationAccumulator = 0.0;
 
 	while (PlatformEvents())
 	{
 		const double fTime = PlatformGetTime();
+		const double elapsed = std::clamp(fTime - previousTime, 0.0, 0.25);
+		previousTime = fTime;
+		simulationAccumulator += elapsed;
+		const double simulationStep = SIMULATION_STEP_SECONDS *
+			(static_cast<double>(frameGap + 1) / (DEFAULT_FRAME_GAP + 1));
 
-		// Update game logic
-		OnFrameMove(fTime, g_trackState, g_gameState);
+		int simulationSteps = 0;
+		while (simulationAccumulator >= simulationStep && simulationSteps < 5)
+		{
+			OnFrameMove(fTime, g_trackState, g_gameState);
+			simulationAccumulator -= simulationStep;
+			++simulationSteps;
+		}
+		if (simulationSteps == 5)
+			simulationAccumulator = std::min(simulationAccumulator, simulationStep);
 
 		// Render frame
 		OnFrameRender(g_trackState, g_gameMode, fTime);
 
 		// Draw FPS in top-right corner
-		g_renderer.DrawGameText(g_renderer.GetWidth() - 90, 2, format(L"FPS: %.1f", g_fps), XRGB(255, 255, 0));
+		const auto fpsText = format(L"FPS: %.1f", g_fps);
+		g_renderer.DrawGameText(g_renderer.GetWidth() - 8 - static_cast<int>(fpsText.size()) * 8, 4,
+		                        fpsText, XRGB(255, 255, 0));
 
 		PlatformPresentFrame(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
 
@@ -1371,6 +1482,65 @@ static void StoreCarTriangle(const COORD_3D* c1, const COORD_3D* c2, const COORD
 	++numCarVertices;
 }
 
+static void StoreCarQuad(const COORD_3D& c0, const COORD_3D& c1, const COORD_3D& c2, const COORD_3D& c3,
+						 SWVertex* pVertices, const uint32_t colour)
+{
+	StoreCarTriangle(&c0, &c1, &c2, pVertices, colour);
+	StoreCarTriangle(&c0, &c2, &c3, pVertices, colour);
+}
+
+static void StoreWheel(const double x0, const double x1, const double z,
+					   SWVertex* pVertices, const bool hubAtX0)
+{
+	constexpr int sides = 6;
+	constexpr double centreY = -VCAR_HEIGHT / 8.0;
+	constexpr double sqrtThree = 1.7320508075688772;
+	constexpr double verticalRadius = VCAR_HEIGHT / (4.0 * sqrtThree);
+	constexpr double longitudinalRadius = 24.0;
+	const uint32_t tire = SCRGB(SCR_BASE_COLOUR + 0);
+	COORD_3D inner[sides];
+	COORD_3D outer[sides];
+	for (int side = 0; side < sides; ++side)
+	{
+		const double angle = side * 2.0 * PI / sides;
+		const double y = centreY + std::sin(angle) * verticalRadius;
+		const double wheelZ = z + std::cos(angle) * longitudinalRadius;
+		inner[side] = {x0, y, wheelZ};
+		outer[side] = {x1, y, wheelZ};
+	}
+	for (int side = 0; side < sides; ++side)
+	{
+		const int next = (side + 1) % sides;
+		StoreCarQuad(inner[side], inner[next], outer[next], outer[side], pVertices, tire);
+	}
+	for (int side = 1; side < sides - 1; ++side)
+	{
+		StoreCarTriangle(&inner[0], &inner[side + 1], &inner[side], pVertices, tire);
+		StoreCarTriangle(&outer[0], &outer[side], &outer[side + 1], pVertices, tire);
+	}
+
+	// A smaller hex on the outward face reads as a hub at low resolution.
+	const double hubX = hubAtX0 ? x0 - 0.5 : x1 + 0.5;
+	const uint32_t hub = SCRGB(SCR_BASE_COLOUR + 7);
+	COORD_3D hubVertices[sides];
+	for (int side = 0; side < sides; ++side)
+	{
+		const double angle = side * 2.0 * PI / sides;
+		hubVertices[side] = {
+			hubX,
+			centreY + std::sin(angle) * verticalRadius * 0.48,
+			z + std::cos(angle) * longitudinalRadius * 0.48
+		};
+	}
+	for (int side = 1; side < sides - 1; ++side)
+	{
+		if (hubAtX0)
+			StoreCarTriangle(&hubVertices[0], &hubVertices[side + 1], &hubVertices[side], pVertices, hub);
+		else
+			StoreCarTriangle(&hubVertices[0], &hubVertices[side], &hubVertices[side + 1], pVertices, hub);
+	}
+}
+
 
 static void CreateCarInVB(SWVertex* pVertices)
 {
@@ -1409,41 +1579,13 @@ static void CreateCarInVB(SWVertex* pVertices)
 	};
 
 	// rear left wheel
-	uint32_t colour = SCRGB(SCR_BASE_COLOUR + 0);
-	// viewing from back
-	StoreCarTriangle(&car[0], &car[1], &car[2], pVertices, colour);
-	StoreCarTriangle(&car[0], &car[2], &car[3], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3], &car[2], &car[1], pVertices, colour);
-	StoreCarTriangle(&car[3], &car[1], &car[0], pVertices, colour);
-
-	// rear right wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 4], &car[1 + 4], &car[2 + 4], pVertices, colour);
-	StoreCarTriangle(&car[0 + 4], &car[2 + 4], &car[3 + 4], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 4], &car[2 + 4], &car[1 + 4], pVertices, colour);
-	StoreCarTriangle(&car[3 + 4], &car[1 + 4], &car[0 + 4], pVertices, colour);
-
-	// front left wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 8], &car[1 + 8], &car[2 + 8], pVertices, colour);
-	StoreCarTriangle(&car[0 + 8], &car[2 + 8], &car[3 + 8], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 8], &car[2 + 8], &car[1 + 8], pVertices, colour);
-	StoreCarTriangle(&car[3 + 8], &car[1 + 8], &car[0 + 8], pVertices, colour);
-
-	// front right wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 12], &car[1 + 12], &car[2 + 12], pVertices, colour);
-	StoreCarTriangle(&car[0 + 12], &car[2 + 12], &car[3 + 12], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 12], &car[2 + 12], &car[1 + 12], pVertices, colour);
-	StoreCarTriangle(&car[3 + 12], &car[1 + 12], &car[0 + 12], pVertices, colour);
-	/**/
+	StoreWheel(-VCAR_WIDTH / 2.0, -VCAR_WIDTH / 4.0, -VCAR_LENGTH / 2.0, pVertices, true);
+	StoreWheel(VCAR_WIDTH / 4.0, VCAR_WIDTH / 2.0, -VCAR_LENGTH / 2.0, pVertices, false);
+	StoreWheel(-VCAR_WIDTH / 2.0, -VCAR_WIDTH / 4.0, VCAR_LENGTH / 2.0, pVertices, true);
+	StoreWheel(VCAR_WIDTH / 4.0, VCAR_WIDTH / 2.0, VCAR_LENGTH / 2.0, pVertices, false);
 
 	// car left side
-	colour = SCRGB(SCR_BASE_COLOUR + 12);
+	uint32_t colour = SCRGB(SCR_BASE_COLOUR + 12);
 	StoreCarTriangle(&car[4 + 16], &car[5 + 16], &car[1 + 16], pVertices, colour);
 	StoreCarTriangle(&car[4 + 16], &car[1 + 16], &car[0 + 16], pVertices, colour);
 	// car right side
@@ -1466,6 +1608,19 @@ static void CreateCarInVB(SWVertex* pVertices)
 	colour = SCRGB(SCR_BASE_COLOUR + 9);
 	StoreCarTriangle(&car[3 + 16], &car[7 + 16], &car[4 + 16], pVertices, colour);
 	StoreCarTriangle(&car[3 + 16], &car[4 + 16], &car[0 + 16], pVertices, colour);
+
+	// Raised cockpit: a compact contrasting cabin breaks up the original wedge.
+	const COORD_3D cockpit[8] = {
+		{-24, 30, -42}, {24, 30, -42}, {-24, 30, 48}, {24, 30, 48},
+		{-15, 64, -24}, {15, 64, -24}, {-15, 58, 30}, {15, 58, 30}
+	};
+	colour = SCRGB(SCR_BASE_COLOUR + 6);
+	StoreCarQuad(cockpit[0], cockpit[4], cockpit[6], cockpit[2], pVertices, colour);
+	StoreCarQuad(cockpit[1], cockpit[3], cockpit[7], cockpit[5], pVertices, colour);
+	StoreCarQuad(cockpit[0], cockpit[1], cockpit[5], cockpit[4], pVertices, colour);
+	StoreCarQuad(cockpit[2], cockpit[6], cockpit[7], cockpit[3], pVertices, colour);
+	colour = SCRGB(SCR_BASE_COLOUR + 15);
+	StoreCarQuad(cockpit[4], cockpit[5], cockpit[7], cockpit[6], pVertices, colour);
 }
 
 
@@ -1493,4 +1648,20 @@ void DrawCar(SoftwareRenderer& r)
 	if (!pCarVertices || numCarVertices < 3) return;
 
 	r.DrawTriangleList(pCarVertices, 0, numCarVertices / 3, nullptr);
+}
+
+static void DrawPlayerCar(SoftwareRenderer& r)
+{
+	if (!pCarVertices || numCarVertices < 3) return;
+
+	constexpr int wheelTriangles = 24;
+	constexpr int wheelVertices = wheelTriangles * 3;
+	for (int wheel = 0; wheel < 4; ++wheel)
+	{
+		r.SetWorldMatrix(matWorldCarWheels[wheel]);
+		r.DrawTriangleList(pCarVertices, wheel * wheelVertices, wheelTriangles, nullptr);
+	}
+
+	r.SetWorldMatrix(matWorldCar);
+	r.DrawTriangleList(pCarVertices, 4 * wheelVertices, (numCarVertices - 4 * wheelVertices) / 3, nullptr);
 }

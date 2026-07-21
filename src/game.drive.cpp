@@ -332,20 +332,18 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 		game.off_track_count = 0;
 	}
 
-	CarControl(game, input);
-
-	// Chain-controlled descent: override Y physics during the lowering phase
-	const double saved_player_y = game.player_y;
-
-	CarMovement(track, game, sound);
-
 	if (game.on_chains)
 	{
-		// Restore Y to pre-physics value and apply constant descent rate instead.
-		// This prevents the spring-damper collision system from launching the car
-		// through the track due to the large initial displacement.
-		game.player_y = saved_player_y;
+		// Chain placement is isolated from normal suspension and rotation physics.
+		// Running CarMovement here allowed a previous banked crash to feed angular
+		// state into the 48-frame lowering sequence.
 		game.player_world_y_speed = 0;
+		game.player_x_rotation_speed = 0;
+		game.player_y_rotation_speed = 0;
+		game.player_z_rotation_speed = 0;
+		game.player_final_x_rotation_speed = 0;
+		game.player_final_y_rotation_speed = 0;
+		game.player_final_z_rotation_speed = 0;
 
 		// Render-space Y is negative-up, so descending = INCREASING player_y.
 		constexpr double CHAIN_DESCENT_RATE = 1.0;
@@ -358,6 +356,22 @@ CarPose CarBehaviour(TrackState& track, GameState& game, const SoundState& sound
 			game.on_chains = false;
 			game.drop_start_done = true;
 		}
+
+		const auto rot = CalcYXZTrigCoefficients(game.player_x_angle,
+		                                         game.player_y_angle,
+		                                         game.player_z_angle);
+		CalculateWheelXZOffsets(game, rot);
+		CalculateRoadWheelHeights(track, game);
+		CalculateActualWheelHeights(game);
+		game.touching_road =
+			game.front_left_road_height >= game.front_left_actual_height ||
+			game.front_right_road_height >= game.front_right_actual_height ||
+			game.rear_road_height >= game.rear_actual_height;
+	}
+	else
+	{
+		CarControl(game, input);
+		CarMovement(track, game, sound);
 	}
 
 	UpdateEngineRevs(game);
@@ -755,66 +769,17 @@ static double CalculateIfCarOffRoad(GameState& player, double height)
 
 static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int32_t wheel, double x, double z)
 {
-	// starts with the piece/surface that was used last time
-	// this avoids locating the wrong map square,
-	// e.g. for diagonal pieces that run into adjacent squares
-
-	static int32_t piece = -1, segment = -1;
-	static int32_t first_time = true, prevTrackID = NO_TRACK;
-	SurfaceCoords sc = {};
-
-	// Reset variables when the track changes
-	if (track.TrackID != prevTrackID)
-	{
-		piece = -1;
-		segment = -1;
-		first_time = true;
-		prevTrackID = track.TrackID;
-	}
-
-	//
-
-	// Handle the case when the point has been off the road and then returned to an
-	// entirely different area of the road (e.g. car placed back onto track in different place)
-	auto pieceResult = GetPieceUsingMap(track, x, z);
-	if (!pieceResult.found)
-	{
-		if (first_time)
-		{
-			// get the four (x,y,z) points for the first surface of the default piece
-			piece = 0;
-			segment = 0;
-			sc = GetSurfaceCoords(track, piece, segment);
-		}
-	}
-	else
-	{
-		int32_t this_piece = pieceResult.piece;
-		if (first_time ||
-			abs(this_piece - piece) > 1) // moved by more than one piece
-		{
-			// check the move is not from the last to first piece, or vice versa
-			if (!(this_piece == track.NumTrackPieces - 1 && piece == 0) &&
-				!(this_piece == 0 && piece == track.NumTrackPieces - 1))
-			{
-				// get the four (x,y,z) points for the current surface of the piece
-				piece = this_piece;
-				segment = 0;
-				sc = GetSurfaceCoords(track, piece, segment);
-			}
-		}
-	}
-
-	first_time = false; // ensure flag is cleared
-
-	// `sc` is a function-local that was zero-initialised above. The search loops
-	// only refresh it when piece/segment is advanced, so when this function is
-	// called repeatedly with the same piece (e.g. from CalculateRoadWheelHeights
-	// for each wheel), `sc` would otherwise stay all-zero and CalcSurfacePosition
-	// / interpolation would return 0 — placing the road plane at world Y=0 and
-	// dropping the car through the track. Always load it for the current piece.
-	if (piece >= 0 && segment >= 0)
-		sc = GetSurfaceCoords(track, piece, segment);
+	// Resolve every query independently. A shared piece/segment cursor made the
+	// result depend on call order between the three wheels, centre-position
+	// updates, the post-integration floor and the camera clamp. That is especially
+	// unsafe at a ramp followed by an empty map cube, where adjacent wheel queries
+	// can legitimately lie on different pieces.
+	const auto pieceResult = GetPieceUsingMap(track, x, z);
+	int32_t piece = pieceResult.found ? pieceResult.piece : player.player_current_piece;
+	if (piece < 0 || piece >= track.NumTrackPieces)
+		piece = 0;
+	int32_t segment = 0;
+	SurfaceCoords sc = GetSurfaceCoords(track, piece, segment);
 
 	//
 
@@ -982,7 +947,8 @@ static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int
 		auto surf = CalcSurfacePosition(track, piece, rx, rz, sc.x2, sc.z2, sc.x1, sc.z1, sc.x3, sc.z3);
 		sx = static_cast<int32_t>(surf.sx);
 		sz = static_cast<int32_t>(surf.sz);
-		calculated_segment = surf.segment;
+		if (track.Track[piece].type & 0x80)
+			calculated_segment = surf.segment;
 
 		if (wheel == REAR)
 		{
@@ -997,7 +963,8 @@ static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int
 		auto surf = CalcSurfacePosition(track, piece, rx, rz, sc.x2, sc.z2, sc.x1, sc.z1, sc.x3, sc.z3);
 		sx = static_cast<int32_t>(surf.sx);
 		sz = static_cast<int32_t>(surf.sz);
-		calculated_segment = surf.segment;
+		if (track.Track[piece].type & 0x80)
+			calculated_segment = surf.segment;
 
 		player.player_current_piece = piece;
 		player.player_current_segment = calculated_segment;
@@ -1026,12 +993,20 @@ static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int
 	//			  (sc.x3, sc.y3, sc.z3)
 	//			  (sc.x4, sc.y4, sc.z4)
 
-	// first do x interpolation
-	double sya = sc.y1 + sx * (sc.y4 - sc.y1) / static_cast<double>(GameState::SURFACE_SIZE);
-	double syb = sc.y2 + sx * (sc.y3 - sc.y2) / static_cast<double>(GameState::SURFACE_SIZE);
-
-	// now do z interpolation
-	double y = syb * GameState::SURFACE_SIZE + sz * (sya - syb);
+	// Match the renderer's road triangles exactly. The rendered quad uses the
+	// diagonal from y2 (start-left) to y4 (end-right): triangles y2/y1/y4 and
+	// y2/y4/y3. Bilinear interpolation describes a different, curved surface
+	// whenever the four corners are not coplanar, which can put the collision
+	// plane below a visible road triangle on banked/twisted segments.
+	double y;
+	if (sz >= sx)
+	{
+		y = sc.y2 * GameState::SURFACE_SIZE + sz * (sc.y1 - sc.y2) + sx * (sc.y4 - sc.y1);
+	}
+	else
+	{
+		y = sc.y2 * GameState::SURFACE_SIZE + sx * (sc.y3 - sc.y2) + sz * (sc.y4 - sc.y3);
+	}
 
 	// Compose the per-axis interpolation rescale (16) with the caller-side
 	// rescale (1 / 4096) so the function returns ready-to-use "PC StuntCarRacer
@@ -1569,11 +1544,6 @@ static void EnforceTrackFloor(TrackState& track, GameState& player)
 {
 	if (!player.drop_start_done) return;
 
-	// Save the spring-filter state so re-running CalculateRoadWheelHeights
-	// here does not corrupt the next frame's averaging input.
-	const double saved_fl = player.front_left_road_height;
-	const double saved_fr = player.front_right_road_height;
-	const double saved_rr = player.rear_road_height;
 	const double saved_z_speed = player.player_z_speed;
 
 	// Bypass CalculateRoadWheelHeight's averaging so we get the raw road
@@ -1615,11 +1585,6 @@ static void EnforceTrackFloor(TrackState& track, GameState& player)
 		CalculateActualWheelHeights(player);
 	}
 
-	// Restore the spring-filter inputs so next frame's averaged sample is
-	// computed from the same prev-frame value it would have used without us.
-	player.front_left_road_height = saved_fl;
-	player.front_right_road_height = saved_fr;
-	player.rear_road_height = saved_rr;
 }
 
 static void CalculateTotalAcceleration(GameState& player)

@@ -36,13 +36,15 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		if (x1 < 0)
 		{
 			if (x2 < 0) break;
-			y1 -= x1 * (y2 - y1) / (x2 - x1);
+			y1 -= static_cast<int32_t>(static_cast<double>(x1) * (y2 - static_cast<double>(y1)) /
+				(x2 - static_cast<double>(x1)));
 			x1 = 0;
 		}
 		else if (x1 > max_x)
 		{
 			if (x2 > max_x) break;
-			y1 -= (x1 - max_x) * (y2 - y1) / (x2 - x1);
+			y1 -= static_cast<int32_t>((x1 - static_cast<double>(max_x)) * (y2 - static_cast<double>(y1)) /
+				(x2 - static_cast<double>(x1)));
 			x1 = max_x;
 		}
 
@@ -50,14 +52,16 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		if (y1 < 0)
 		{
 			if (y2 < 0) break;
-			x1 -= y1 * (x2 - x1) / (y2 - y1);
+			x1 -= static_cast<int32_t>(static_cast<double>(y1) * (x2 - static_cast<double>(x1)) /
+				(y2 - static_cast<double>(y1)));
 			y1 = 0;
 			if (x1 < 0 || x1 > max_x) break;
 		}
 		else if (y1 > max_y)
 		{
 			if (y2 > max_y) break;
-			x1 -= (y1 - max_y) * (x2 - x1) / (y2 - y1);
+			x1 -= static_cast<int32_t>((y1 - static_cast<double>(max_y)) * (x2 - static_cast<double>(x1)) /
+				(y2 - static_cast<double>(y1)));
 			y1 = max_y;
 			if (x1 < 0 || x1 > max_x) break;
 		}
@@ -65,25 +69,29 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		// clip x2
 		if (x2 < 0)
 		{
-			y2 -= x2 * (y1 - y2) / (x1 - x2);
+			y2 -= static_cast<int32_t>(static_cast<double>(x2) * (y1 - static_cast<double>(y2)) /
+				(x1 - static_cast<double>(x2)));
 			x2 = 0;
 		}
 		else if (x2 > max_x)
 		{
-			y2 -= (x2 - max_x) * (y1 - y2) / (x1 - x2);
+			y2 -= static_cast<int32_t>((x2 - static_cast<double>(max_x)) * (y1 - static_cast<double>(y2)) /
+				(x1 - static_cast<double>(x2)));
 			x2 = max_x;
 		}
 
 		// clip y2
 		if (y2 < 0)
 		{
-			x2 -= y2 * (x1 - x2) / (y1 - y2);
+			x2 -= static_cast<int32_t>(static_cast<double>(y2) * (x1 - static_cast<double>(x2)) /
+				(y1 - static_cast<double>(y2)));
 			y2 = 0;
 			if (x2 < 0 || x2 > max_x) break;
 		}
 		else if (y2 > max_y)
 		{
-			x2 -= (y2 - max_y) * (x1 - x2) / (y1 - y2);
+			x2 -= static_cast<int32_t>((y2 - static_cast<double>(max_y)) * (x1 - static_cast<double>(x2)) /
+				(y1 - static_cast<double>(y2)));
 			y2 = max_y;
 			if (x2 < 0 || x2 > max_x) break;
 		}
