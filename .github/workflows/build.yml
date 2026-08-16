@@ -16,21 +16,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Build Release Win32
-        run: msbuild game.sln /m /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
-
-      - name: Build Debug Win32
-        run: msbuild game.sln /m /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v143
-
-      - name: Run tests
+      # dd.ps1 locates Visual Studio, enters the MSVC environment and falls back
+      # to the CMake and Ninja that ship with it, so there is nothing to install.
+      - name: Build Debug
         shell: pwsh
-        run: |
-          $process = Start-Process -FilePath .\exe\stunt-car-racer-32d.exe `
-            -ArgumentList '-test' -WorkingDirectory $PWD -NoNewWindow -Wait -PassThru
-          exit $process.ExitCode
+        run: .\dd.ps1 build -Config Debug
+
+      - name: Build and test Release
+        shell: pwsh
+        run: .\dd.ps1 test
 
       - name: Upload test results
         if: always()

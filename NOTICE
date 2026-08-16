@@ -1,0 +1,18 @@
+NOTICE
+
+This repository is a Windows port of Stunt Car Racer, designed by Geoff
+Crammond and published in 1989 by MicroProse under their MicroStyle and
+MicroPlay labels.
+
+It descends from stuntcarremake on SourceForge by way of
+https://github.com/fluffyfreak/stuntcarracer. Neither of those projects
+carries a licence, so no licence can be granted here.
+
+NO LICENCE IS GRANTED FOR THIS REPOSITORY. It is published for reference and
+preservation only. The game, its name, its artwork, its audio and its track
+data remain the property of their respective copyright owners. The contents
+of Bitmap/, Sounds/ and Tracks/ derive from the original game and are not the
+work of this repository's author.
+
+If you hold rights in this material and want it removed, please open an issue
+and it will be taken down.

@@ -972,7 +972,7 @@ static double CalculateWorldRoadHeight(TrackState& track, GameState& player, int
 		player.players_distance_into_section = calculated_segment * 256 + (sz >> (GameState::LOG_SURFACE_SIZE - 8));
 		if (calculated_segment >= track.Track[piece].numSegments)
 		{
-			PlatformShowError(L"calculated_segment out of range", L"Error");
+			ShowError(L"calculated_segment out of range", L"Error");
 		}
 
 		player.players_road_x_position = static_cast<int32_t>(surf.road_x);
@@ -1020,7 +1020,7 @@ static SurfaceCoords GetSurfaceCoords(const TrackState& track, const int32_t pie
 
 	if (segment < 0 || segment >= t.numSegments)
 	{
-		PlatformShowError(L"GetSurfaceCoords segment out of range", L"Error");
+		ShowError(L"GetSurfaceCoords segment out of range", L"Error");
 		return {};
 	}
 
@@ -1372,11 +1372,11 @@ static void CarCollisionDetection(const TrackState& track, GameState& player, co
 	if (amiga_volume < 28) amiga_volume = 28;
 	if (amiga_volume > 64) amiga_volume = 64;
 
-	PlatformSoundSetVolume(sound.GroundedSoundBuffer, amiga_volume);
+	SoundSetVolume(sound.GroundedSoundBuffer, amiga_volume);
 
 	if (player.grounded_delay == 0)
 	{
-		PlatformSoundPlay(sound.GroundedSoundBuffer, false); // not looping
+		SoundPlay(sound.GroundedSoundBuffer, false); // not looping
 		player.grounded_delay = 5;
 	}
 }
@@ -2526,7 +2526,7 @@ int engineSoundIndex = -1;
 // All sounds playing but mute the ones that aren't required - WORSE
 // Start the new sound playing at the same percentage through as the previous sound - SLIGHTLY BETTER
 
-void FramesWheelsEngine(SoundState& sound, PlatformSoundBuffer* engineSoundBuffers[])
+void FramesWheelsEngine(SoundState& sound, pf::sound_buffer_ptr engineSoundBuffers[])
 {
 	int r = engineRevs + engineRevsChange;
 	static int lastEngineSoundIndex = -1;
@@ -2575,9 +2575,8 @@ void FramesWheelsEngine(SoundState& sound, PlatformSoundBuffer* engineSoundBuffe
 		// Stop the old engine sound
 		if (lastEngineSoundIndex >= 0)
 		{
-			const auto soundPos = PlatformSoundGetPosition(engineSoundBuffers[lastEngineSoundIndex]);
-			currentPlayCursor = soundPos.pos;
-			PlatformSoundStop(engineSoundBuffers[lastEngineSoundIndex]);
+			currentPlayCursor = SoundPlayPosition(engineSoundBuffers[lastEngineSoundIndex]);
+			SoundStop(engineSoundBuffers[lastEngineSoundIndex]);
 		}
 		else
 			currentPlayCursor = 0;
@@ -2590,15 +2589,15 @@ void FramesWheelsEngine(SoundState& sound, PlatformSoundBuffer* engineSoundBuffe
 		else
 			currentPlayCursor = currentPlayCursor * 2;
 
-		PlatformSoundSetPosition(engineSoundBuffers[engineSoundIndex], currentPlayCursor);
-		PlatformSoundPlay(engineSoundBuffers[engineSoundIndex], true);
+		SoundSetPlayPosition(engineSoundBuffers[engineSoundIndex], currentPlayCursor);
+		SoundPlay(engineSoundBuffers[engineSoundIndex], true);
 
 		lastEngineSoundIndex = engineSoundIndex;
 		sound.engineSoundPlaying = true;
 	}
 
 	// Set the frequency of the current engine sound
-	PlatformSoundSetFrequency(engineSoundBuffers[engineSoundIndex], freq);
+	SoundSetFrequency(engineSoundBuffers[engineSoundIndex], freq);
 }
 
 void CalculatePlayersRoadPosition(TrackState& track, GameState& player)
@@ -2626,12 +2625,12 @@ static void DrawDustClouds(const GameState& player, const SoundState& sound)
 	p &= 0x1c;
 	p += 450;
 
-	PlatformSoundSetFrequency(sound.OffRoadSoundBuffer, AMIGA_PAL_HZ / p);
+	SoundSetFrequency(sound.OffRoadSoundBuffer, AMIGA_PAL_HZ / p);
 
 	if (!player.touching_road)
 		return;
 
-	PlatformSoundPlay(sound.OffRoadSoundBuffer, false); // not looping
+	SoundPlay(sound.OffRoadSoundBuffer, false); // not looping
 }
 
 static void DrawSparks(const GameState& game, const SoundState& sound)
@@ -2655,12 +2654,12 @@ static void DrawSparks(const GameState& game, const SoundState& sound)
 	p <<= 2;
 	p += 170;
 
-	PlatformSoundSetFrequency(sound.WreckSoundBuffer, AMIGA_PAL_HZ / p);
+	SoundSetFrequency(sound.WreckSoundBuffer, AMIGA_PAL_HZ / p);
 
 	if (!game.touching_road)
 		return;
 
-	PlatformSoundPlay(sound.WreckSoundBuffer, false); // not looping
+	SoundPlay(sound.WreckSoundBuffer, false); // not looping
 }
 
 static void PlayCreakSound(const GameState& player, const SoundState& sound)
@@ -2670,8 +2669,8 @@ static void PlayCreakSound(const GameState& player, const SoundState& sound)
 	if (amiga_volume < 28) amiga_volume = 28;
 	if (amiga_volume > 64) amiga_volume = 64;
 
-	PlatformSoundSetVolume(sound.CreakSoundBuffer, amiga_volume);
-	PlatformSoundPlay(sound.CreakSoundBuffer, false); // not looping
+	SoundSetVolume(sound.CreakSoundBuffer, amiga_volume);
+	SoundPlay(sound.CreakSoundBuffer, false); // not looping
 }
 
 void UpdateDamage(GameState& player, const SoundState& sound)
@@ -2709,7 +2708,7 @@ void UpdateDamage(GameState& player, const SoundState& sound)
 	player.smashed_countdown = 69;
 
 	// Play smash sound effect
-	PlatformSoundPlay(sound.SmashSoundBuffer, false); // not looping
+	SoundPlay(sound.SmashSoundBuffer, false); // not looping
 }
 
 static constexpr int32_t LAP_THAT_FINISHES_RACE = 4;
