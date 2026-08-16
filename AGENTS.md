@@ -4,28 +4,32 @@ This is a Windows C++ port of the classic game **Stunt Car Racer** (originally b
 
 ## Source files (src/)
 
-- **platform.h** — Platform-independent types, constants, and API declarations
-- **platform.win.cpp** — Windows platform layer (Win32, DirectSound, WinMain)
-- **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs
+- **main.cpp** — Binds the game to the shared platform: `app_init`, the window
+  reactor (input, resize, focus) and the hand-off to the game's own frame loop
+- **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs, the null-safe sound helpers
 - **game.cpp** — Top-level game logic: app entry points, frame loop, palette/resources/sound setup, viewpoints, sin/cos table, car model construction & rendering, world transforms
 - **game.backdrop.cpp** — Sky/ground horizon and distant scenery rendering
 - **game.drive.cpp** — Car physics and player driving behaviour
 - **game.opponent.cpp** — Opponent AI, car-to-car collision detection, race position tracking
 - **game.track.cpp** — Track data loading, conversion, and rendering
 - **render.software.h / .cpp** — Software 3D renderer, platform-independent
-- **game.rc / resource.h** — Win32 resources and auto-generated resource IDs
-- **game.manifest** — Win32 application manifest
 - **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks)
+
+The platform layer (windowing, input, menus, audio, timers) lives in the shared
+**platform-h** repository behind the `pf::` namespace, and no Windows SDK header
+is included anywhere in this repo. Tracks, samples and road textures are
+compiled in as byte arrays by `platform_add_app(EMBED ...)` and fetched by file
+name with `pf::embedded_resource_data`.
 
 ## Build & test
 
-Build via the `Build Debug Win32` task (or Release) — outputs land in `exe/`.
-
-Run the headless self-tests with the `-test` (or `/test`) command-line flag:
-
 ```pwsh
-.\exe\StuntCarRacerWin32Debug.exe -test
+.\dd.ps1 build          # Release x64; add -Config Debug for a debug build
+.\dd.ps1 test           # build, then run the headless self-tests
 ```
+
+`dd.ps1` locates Visual Studio, enters the MSVC environment and falls back to
+the CMake and Ninja that ship with it. Output lands in `exe/`.
 
 Tests run without creating a window, write a per-frame log to stdout, and exit
 with code `0` on success / non-zero on any failure (final `Total failures: N`

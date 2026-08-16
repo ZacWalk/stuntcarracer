@@ -309,21 +309,22 @@ void CreateResources()
 	CreateShadowVertexBuffer();
 	CreateCarVertexBuffer();
 
-	// Load road textures from resources
-	static std::wstring_view roadTexNames[] = {
-		L"RoadYellowDark", L"RoadYellowLight",
-		L"RoadRedDark", L"RoadRedLight",
-		L"RoadBlack", L"RoadWhite"
+	// Load road textures from embedded resources
+	static std::string_view roadTexNames[] = {
+		"RoadYellowDark.bmp", "RoadYellowLight.bmp",
+		"RoadRedDark.bmp", "RoadRedLight.bmp",
+		"RoadBlack.bmp", "RoadWhite.bmp"
 	};
 	g_roadTexture.clear();
 	g_roadTexture.resize(std::size(roadTexNames));
 	for (size_t i = 0; i < std::size(roadTexNames); ++i)
 	{
-		const auto bmp = PlatformLoadBitmapResource(roadTexNames[i]);
+		const auto data = pf::embedded_resource_data(roadTexNames[i]);
+		const auto bmp = data.empty() ? nullptr : pf::load_bitmap_memory(data.data(), data.size());
 		if (bmp)
 			g_roadTexture[i] = SWTexture{bmp->pixels, bmp->width, bmp->height};
 		else
-			PlatformShowError(format(L"Failed to load road texture: %ls", roadTexNames[i].data()), L"Warning");
+			ShowError(format(L"Failed to load road texture: %hs", roadTexNames[i].data()), L"Warning");
 	}
 
 	// Set projection transform
@@ -530,7 +531,7 @@ static void StopEngineSound()
 	if (g_soundState.engineSoundPlaying)
 	{
 		for (int i = 0; i < 8; i++)
-			PlatformSoundStop(g_soundState.EngineSoundBuffers[i]);
+			SoundStop(g_soundState.EngineSoundBuffers[i]);
 
 		g_soundState.engineSoundPlaying = false;
 	}
@@ -682,7 +683,7 @@ static void StartGame()
 	g_gameMode = GAME_IN_PROGRESS;
 	ResetLapData(g_gameState, OPPONENT);
 	ResetLapData(g_gameState, PLAYER);
-	gameStartTime = PlatformGetTime();
+	gameStartTime = pf::platform_get_time();
 	gameEndTime = 0;
 	g_gameState.boostReserve = g_trackState.StandardBoost;
 	g_gameState.boostUnit = 0;
@@ -746,7 +747,7 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 			uint32_t titleColor = textColor;
 
 			// Output opponent's name for four seconds at race start
-			if (PlatformGetTime() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
+			if (pf::platform_get_time() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
 			{
 				title = GetOpponentName(game.opponentsID);
 			}
@@ -785,7 +786,7 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 
 			if (game.raceFinished)
 			{
-				const double currentTime = PlatformGetTime();
+				const double currentTime = pf::platform_get_time();
 				if (gameEndTime == 0.0)
 					gameEndTime = currentTime;
 
@@ -885,7 +886,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 			const int32_t track_number = nChar - '1';
 			if (!ConvertAmigaTrack(g_trackState, track_number))
 			{
-				PlatformShowError(L"Failed to convert track", L"Error");
+				ShowError(L"Failed to convert track", L"Error");
 				return;
 			}
 			CreateTrackVertexBuffer(g_trackState);
@@ -893,7 +894,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 		break;
 
 	// controls for CarBehaviour, Player 1
-	case PlatformKey::Left:
+	case pf::platform_key::Left:
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID - 1;
@@ -905,7 +906,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 			lastInput |= KEY_P1_LEFT;
 		break;
 
-	case PlatformKey::Right:
+	case pf::platform_key::Right:
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID + 1;
@@ -917,13 +918,13 @@ void AppHandleKeyDown(const uint32_t nChar)
 			lastInput |= KEY_P1_RIGHT;
 		break;
 
-	case PlatformKey::Control:
+	case pf::platform_key::Control:
 		ctrlHeld = true;
 		if (lastInput & KEY_P1_ACCEL)
 			lastInput |= KEY_P1_BOOST;
 		break;
 
-	case PlatformKey::Up:
+	case pf::platform_key::Up:
 		if (g_gameMode == TRACK_MENU)
 			NextSceneryType();
 		else
@@ -934,14 +935,14 @@ void AppHandleKeyDown(const uint32_t nChar)
 		}
 		break;
 
-	case PlatformKey::Down:
+	case pf::platform_key::Down:
 		if (g_gameMode == TRACK_MENU)
 			NextSceneryType();
 		else
 			lastInput |= KEY_P1_BRAKE;
 		break;
 
-	case PlatformKey::Space:
+	case pf::platform_key::Space:
 	case 'S':
 	case 's':
 		if (g_gameMode == GAME_IN_PROGRESS)
@@ -958,24 +959,24 @@ void AppHandleKeyUp(const uint32_t nChar)
 {
 	switch (nChar)
 	{
-	case PlatformKey::Left:
+	case pf::platform_key::Left:
 		lastInput &= ~KEY_P1_LEFT;
 		break;
 
-	case PlatformKey::Right:
+	case pf::platform_key::Right:
 		lastInput &= ~KEY_P1_RIGHT;
 		break;
 
-	case PlatformKey::Control:
+	case pf::platform_key::Control:
 		ctrlHeld = false;
 		lastInput &= ~KEY_P1_BOOST;
 		break;
 
-	case PlatformKey::Up:
+	case pf::platform_key::Up:
 		lastInput &= ~(KEY_P1_ACCEL | KEY_P1_BOOST);
 		break;
 
-	case PlatformKey::Down:
+	case pf::platform_key::Down:
 		lastInput &= ~KEY_P1_BRAKE;
 		break;
 	}
@@ -988,57 +989,60 @@ void AppResetInput()
 }
 
 // Sound buffer setup — creates all game sound buffers using platform API
+static pf::sound_buffer_ptr LoadSound(const std::string_view name)
+{
+	return pf::create_sound_buffer(pf::embedded_resource_data(name));
+}
+
 bool SetupSoundBuffers(SoundState& s)
 {
-	if ((s.WreckSoundBuffer = PlatformCreateSoundBuffer(L"WRECK")) == nullptr)
+	if ((s.WreckSoundBuffer = LoadSound("Wreck.wav")) == nullptr)
 		return false;
-	PlatformSoundSetPan(s.WreckSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.WreckSoundBuffer, 64);
+	SoundSetPan(s.WreckSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.WreckSoundBuffer, 64);
 
-	if ((s.HitCarSoundBuffer = PlatformCreateSoundBuffer(L"HITCAR")) == nullptr)
+	if ((s.HitCarSoundBuffer = LoadSound("HitCar.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.HitCarSoundBuffer, AMIGA_PAL_HZ / 238);
-	PlatformSoundSetPan(s.HitCarSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.HitCarSoundBuffer, 56);
+	SoundSetFrequency(s.HitCarSoundBuffer, AMIGA_PAL_HZ / 238);
+	SoundSetPan(s.HitCarSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.HitCarSoundBuffer, 56);
 
-	if ((s.GroundedSoundBuffer = PlatformCreateSoundBuffer(L"GROUNDED")) == nullptr)
+	if ((s.GroundedSoundBuffer = LoadSound("Grounded.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.GroundedSoundBuffer, AMIGA_PAL_HZ / 400);
-	PlatformSoundSetPan(s.GroundedSoundBuffer, PAN_RIGHT);
+	SoundSetFrequency(s.GroundedSoundBuffer, AMIGA_PAL_HZ / 400);
+	SoundSetPan(s.GroundedSoundBuffer, PAN_RIGHT);
 
-	if ((s.CreakSoundBuffer = PlatformCreateSoundBuffer(L"CREAK")) == nullptr)
+	if ((s.CreakSoundBuffer = LoadSound("Creak.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.CreakSoundBuffer, AMIGA_PAL_HZ / 238);
-	PlatformSoundSetPan(s.CreakSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.CreakSoundBuffer, 64);
+	SoundSetFrequency(s.CreakSoundBuffer, AMIGA_PAL_HZ / 238);
+	SoundSetPan(s.CreakSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.CreakSoundBuffer, 64);
 
-	if ((s.SmashSoundBuffer = PlatformCreateSoundBuffer(L"SMASH")) == nullptr)
+	if ((s.SmashSoundBuffer = LoadSound("Smash.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.SmashSoundBuffer, AMIGA_PAL_HZ / 280);
-	PlatformSoundSetPan(s.SmashSoundBuffer, PAN_LEFT);
-	PlatformSoundSetVolume(s.SmashSoundBuffer, 64);
+	SoundSetFrequency(s.SmashSoundBuffer, AMIGA_PAL_HZ / 280);
+	SoundSetPan(s.SmashSoundBuffer, PAN_LEFT);
+	SoundSetVolume(s.SmashSoundBuffer, 64);
 
-	if ((s.OffRoadSoundBuffer = PlatformCreateSoundBuffer(L"OFFROAD")) == nullptr)
+	if ((s.OffRoadSoundBuffer = LoadSound("OffRoad.wav")) == nullptr)
 		return false;
-	PlatformSoundSetPan(s.OffRoadSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.OffRoadSoundBuffer, 64);
+	SoundSetPan(s.OffRoadSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.OffRoadSoundBuffer, 64);
 
-	if ((s.EngineSoundBuffers[0] = PlatformCreateSoundBuffer(L"TICKOVER")) == nullptr)
-		return false;
-	static const wchar_t* engineNames[] = {
-		nullptr, L"ENGINEPITCH2", L"ENGINEPITCH3", L"ENGINEPITCH4",
-		L"ENGINEPITCH5", L"ENGINEPITCH6", L"ENGINEPITCH7", L"ENGINEPITCH8"
+	static const char* engineNames[] = {
+		"TickOver.wav", "EnginePitch2.wav", "EnginePitch3.wav", "EnginePitch4.wav",
+		"EnginePitch5.wav", "EnginePitch6.wav", "EnginePitch7.wav", "EnginePitch8.wav"
 	};
-	for (int i = 1; i < 8; i++)
+	for (int i = 0; i < 8; i++)
 	{
-		if ((s.EngineSoundBuffers[i] = PlatformCreateSoundBuffer(engineNames[i])) == nullptr)
+		if ((s.EngineSoundBuffers[i] = LoadSound(engineNames[i])) == nullptr)
 			return false;
 	}
 
 	for (int i = 0; i < 8; i++)
 	{
-		PlatformSoundSetPan(s.EngineSoundBuffers[i], PAN_LEFT);
-		PlatformSoundSetVolume(s.EngineSoundBuffers[i], 48 / 2);
+		SoundSetPan(s.EngineSoundBuffers[i], PAN_LEFT);
+		SoundSetVolume(s.EngineSoundBuffers[i], 48 / 2);
 	}
 
 	return true;
@@ -1046,30 +1050,27 @@ bool SetupSoundBuffers(SoundState& s)
 
 void DestroySoundBuffers(SoundState& s)
 {
-	// Release all sound buffers by stopping them - DirectSound
-	// resources are freed when PlatformSoundShutdown releases the device
-
-	PlatformDeleteSoundBuffer(s.WreckSoundBuffer);
-	PlatformDeleteSoundBuffer(s.HitCarSoundBuffer);
-	PlatformDeleteSoundBuffer(s.GroundedSoundBuffer);
-	PlatformDeleteSoundBuffer(s.CreakSoundBuffer);
-	PlatformDeleteSoundBuffer(s.SmashSoundBuffer);
-	PlatformDeleteSoundBuffer(s.OffRoadSoundBuffer);
+	s.WreckSoundBuffer.reset();
+	s.HitCarSoundBuffer.reset();
+	s.GroundedSoundBuffer.reset();
+	s.CreakSoundBuffer.reset();
+	s.SmashSoundBuffer.reset();
+	s.OffRoadSoundBuffer.reset();
 	for (int i = 0; i < 8; i++)
-		PlatformDeleteSoundBuffer(s.EngineSoundBuffers[i]);
+		s.EngineSoundBuffers[i].reset();
 }
 
 bool AppInit()
 {
 	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
 	{
-		PlatformShowError(L"Failed to initialize renderer", L"Error");
+		ShowError(L"Failed to initialize renderer", L"Error");
 		return false;
 	}
 
 	// Build menu definition and create menus
 
-	auto sep = [] { return MenuCommand{}; };
+	auto sep = [] { return pf::menu_command{}; };
 
 	auto isMenu = [] { return g_gameMode == TRACK_MENU; };
 	auto isPreview = [] { return g_gameMode == TRACK_PREVIEW; };
@@ -1078,11 +1079,11 @@ bool AppInit()
 	auto hasTrack = [] { return g_trackState.TrackID != NO_TRACK; };
 
 	// --- Game menu ---
-	MenuCommand gameMenu;
-	gameMenu.text = L"&Game";
+	pf::menu_command gameMenu;
+	gameMenu.text = "&Game";
 	gameMenu.children = {
 		{
-			L"&Start Race\tS", IDM_START_RACE,
+			"&Start Race\tS", IDM_START_RACE,
 			[]
 			{
 				if (g_gameMode == TRACK_MENU && g_trackState.TrackID != NO_TRACK)
@@ -1098,7 +1099,7 @@ bool AppInit()
 					g_gameMode = GAME_IN_PROGRESS;
 					ResetLapData(g_gameState, OPPONENT);
 					ResetLapData(g_gameState, PLAYER);
-					gameStartTime = PlatformGetTime();
+					gameStartTime = pf::platform_get_time();
 					gameEndTime = 0;
 					g_gameState.boostReserve = g_trackState.StandardBoost;
 					g_gameState.boostUnit = 0;
@@ -1108,7 +1109,7 @@ bool AppInit()
 			[=] { return (isMenu() && hasTrack()) || isPreview(); }
 		},
 		{
-			L"Back to &Menu\tEsc", IDM_BACK_TO_MENU,
+			"Back to &Menu\tEsc", IDM_BACK_TO_MENU,
 			[]
 			{
 				if (g_gameMode != TRACK_MENU)
@@ -1122,18 +1123,18 @@ bool AppInit()
 		},
 		sep(),
 		{
-			L"&Pause\tP", IDM_PAUSE,
+			"&Pause\tP", IDM_PAUSE,
 			[] { bPaused = true; },
 			[=] { return (isGame() || isPreview()) && !bPaused; }
 		},
 		{
-			L"R&esume\tO", IDM_RESUME,
+			"R&esume\tO", IDM_RESUME,
 			[] { bPaused = false; },
 			[] { return bPaused; }
 		},
 		sep(),
 		{
-			L"&Reverse Car\tR", IDM_REVERSE_CAR,
+			"&Reverse Car\tR", IDM_REVERSE_CAR,
 			[]
 			{
 				if (g_gameMode == GAME_IN_PROGRESS)
@@ -1146,27 +1147,27 @@ bool AppInit()
 		},
 		sep(),
 		{
-			L"E&xit", IDM_EXIT,
-			[] { PlatformClose(); }
+			"E&xit", IDM_EXIT,
+			[] { GameClose(); }
 		},
 	};
 
 	// --- Track menu ---
-	MenuCommand trackMenu;
-	trackMenu.text = L"&Track";
+	pf::menu_command trackMenu;
+	trackMenu.text = "&Track";
 	for (int i = 0; i < NUM_TRACKS; i++)
 	{
 		int trackIdx = i;
 		trackMenu.children.push_back(
 			{
-				GetTrackName(i), IDM_TRACK_FIRST + i,
+				pf::utf16_to_utf8(GetTrackName(i)), IDM_TRACK_FIRST + i,
 				[trackIdx]
 				{
 					if (g_gameMode == TRACK_MENU)
 					{
 						if (!ConvertAmigaTrack(g_trackState, trackIdx))
 						{
-							PlatformShowError(L"Failed to convert track", L"Error");
+							ShowError(L"Failed to convert track", L"Error");
 							return;
 						}
 						CreateTrackVertexBuffer(g_trackState);
@@ -1179,32 +1180,32 @@ bool AppInit()
 	}
 
 	// --- View menu ---
-	MenuCommand viewMenu;
-	viewMenu.text = L"&View";
+	pf::menu_command viewMenu;
+	viewMenu.text = "&View";
 	viewMenu.children = {
 		{
-			L"&Outside Camera", IDM_OUTSIDE_VIEW,
+			"&Outside Camera", IDM_OUTSIDE_VIEW,
 			[] { bOutsideView = !bOutsideView; },
 			[=] { return isGame(); },
 			[] { return bOutsideView; }
 		},
 		{
-			L"Show S&tats\tF5", IDM_SHOW_STATS,
+			"Show S&tats\tF5", IDM_SHOW_STATS,
 			[] { bShowStats = !bShowStats; },
 			nullptr,
 			[] { return bShowStats; }
 		},
 		sep(),
 	};
-	static std::wstring_view sceneryNames[] = {
-		L"Scenery &1"sv, L"Scenery &2"sv, L"Scenery &3"sv, L"Scenery &4"sv, L"Scenery &5"sv
+	static std::string_view sceneryNames[] = {
+		"Scenery &1"sv, "Scenery &2"sv, "Scenery &3"sv, "Scenery &4"sv, "Scenery &5"sv
 	};
 	for (int i = 0; i < 5; i++)
 	{
 		int idx = i;
 		viewMenu.children.push_back(
 			{
-				std::wstring(sceneryNames[i]), IDM_SCENERY_FIRST + i,
+				std::string(sceneryNames[i]), IDM_SCENERY_FIRST + i,
 				[idx] { SetSceneryType(idx); },
 				nullptr,
 				[idx] { return GetSceneryType() == idx; }
@@ -1213,45 +1214,45 @@ bool AppInit()
 	}
 
 	// --- Speed menu ---
-	MenuCommand speedMenu;
-	speedMenu.text = L"S&peed";
+	pf::menu_command speedMenu;
+	speedMenu.text = "S&peed";
 	speedMenu.children = {
 		{
-			L"&Increase Speed\tF9", IDM_SPEED_INCREASE,
+			"&Increase Speed\tF9", IDM_SPEED_INCREASE,
 			[] { if (frameGap > 1) frameGap--; },
 			[] { return frameGap > 1; }
 		},
 		{
-			L"&Decrease Speed\tF10", IDM_SPEED_DECREASE,
+			"&Decrease Speed\tF10", IDM_SPEED_DECREASE,
 			[] { frameGap++; }
 		},
 	};
 
 	// --- Debug menu ---
-	MenuCommand debugMenu;
-	debugMenu.text = L"&Debug";
+	pf::menu_command debugMenu;
+	debugMenu.text = "&Debug";
 	debugMenu.children = {
 		{
-			L"Pause &Player\tF6", IDM_PAUSE_PLAYER,
+			"Pause &Player\tF6", IDM_PAUSE_PLAYER,
 			[] { bPlayerPaused = !bPlayerPaused; },
 			nullptr,
 			[] { return bPlayerPaused; }
 		},
 		{
-			L"Pause &Opponent\tF7", IDM_PAUSE_OPPONENT,
+			"Pause &Opponent\tF7", IDM_PAUSE_OPPONENT,
 			[] { bOpponentPaused = !bOpponentPaused; },
 			nullptr,
 			[] { return bOpponentPaused; }
 		},
 		sep(),
 		{
-			L"&Restart Race\tZ", IDM_RESTART_RACE,
+			"&Restart Race\tZ", IDM_RESTART_RACE,
 			[] { g_gameState.bNewGame = true; },
 			[=] { return isGame() || isOver(); }
 		},
 	};
 
-	PlatformSetMenu({gameMenu, trackMenu, viewMenu, speedMenu, debugMenu});
+	GameSetMenu({gameMenu, trackMenu, viewMenu, speedMenu, debugMenu});
 
 	// Perform application initialization
 	InitialiseData(g_trackState);
@@ -1259,30 +1260,32 @@ bool AppInit()
 	// Create rendering resources
 	CreateResources();
 
-	// Initialise sound objects
-	if (!PlatformSoundInit())
+	if (!pf::sound_init())
 	{
-		PlatformShowError(L"Failed to initialize DirectSound", L"Warning");
-		// Continue without sound
+		ShowError(L"Failed to initialise audio", L"Warning");
+		return true; // continue without sound
 	}
-	else
-	{
-		if (!SetupSoundBuffers(g_soundState))
-		{
-			PlatformShowError(L"Failed to set up sound buffers", L"Warning");
-		}
-	}
+
+	if (!SetupSoundBuffers(g_soundState))
+		ShowError(L"Failed to set up sound buffers", L"Warning");
+
 	return true;
 }
 
 void AppRun()
 {
-	double previousTime = PlatformGetTime();
+	double previousTime = pf::platform_get_time();
 	double simulationAccumulator = 0.0;
 
-	while (PlatformEvents())
+	while (pf::platform_events())
 	{
-		const double fTime = PlatformGetTime();
+		if (GameIsMinimized())
+		{
+			AppResetInput();
+			pf::platform_sleep(50);
+			continue;
+		}
+		const double fTime = pf::platform_get_time();
 		const double elapsed = std::clamp(fTime - previousTime, 0.0, 0.25);
 		previousTime = fTime;
 		simulationAccumulator += elapsed;
@@ -1307,7 +1310,7 @@ void AppRun()
 		g_renderer.DrawGameText(g_renderer.GetWidth() - 8 - static_cast<int>(fpsText.size()) * 8, 4,
 		                        fpsText, XRGB(255, 255, 0));
 
-		PlatformPresentFrame(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
+		GamePresent(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
 
 		// FPS tracking
 		g_fpsFrameCount++;
@@ -1319,7 +1322,7 @@ void AppRun()
 		}
 
 		// Simple frame rate limiter (~60 fps)
-		PlatformSleep(1);
+		pf::platform_sleep(1);
 	}
 
 	// Cleanup
@@ -1455,7 +1458,7 @@ static void StoreCarTriangle(const COORD_3D* c1, const COORD_3D* c2, const COORD
 {
 	if (numCarVertices + 3 > MAX_VERTICES_PER_CAR)
 	{
-		PlatformShowError(L"Exceeded numCarVertices", L"StoreCarTriangle");
+		ShowError(L"Exceeded numCarVertices", L"StoreCarTriangle");
 		return;
 	}
 
