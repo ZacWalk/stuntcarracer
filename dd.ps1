@@ -1,50 +1,135 @@
+<#
+.SYNOPSIS
+    Stunt Car Racer build helper.
+
+.DESCRIPTION
+    dd run   - build Release x64 and start the game
+    dd build - build Release x64
+    dd test  - build Release x64 and run the headless self-tests
+    dd clean - remove build/ and exe/
+
+    Pass -Config Debug to build a command's target as Debug instead.
+#>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('run', 'test')]
-    [string] $Command
+    [Parameter(Position = 0)]
+    [ValidateSet('run', 'build', 'test', 'clean')]
+    [string] $Command = 'run',
+
+    [ValidateSet('Debug', 'Release')]
+    [string] $Config = 'Release',
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]] $Rest
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+$exeName = if ($Config -eq 'Debug') { 'stunt-car-racer-64d.exe' } else { 'stunt-car-racer-64.exe' }
 
-function Find-MSBuild {
-    $command = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
+function Get-VisualStudioPath {
+    $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path $vswhere)) {
+        throw 'vswhere.exe was not found; install Visual Studio with the C++ desktop workload.'
     }
 
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (Test-Path $vswhere) {
-        $installationPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
-        if ($installationPath) {
-            $candidate = Join-Path $installationPath 'MSBuild\Current\Bin\MSBuild.exe'
-            if (Test-Path $candidate) {
-                return $candidate
-            }
-        }
+    $path = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+        Select-Object -First 1
+
+    if (-not $path) {
+        throw 'No Visual Studio installation with the C++ desktop workload was found.'
     }
 
-    throw 'MSBuild.exe was not found. Install Visual Studio with the Desktop development with C++ workload.'
+    return $path
 }
 
-function Build-Game([string] $Configuration) {
-    $msbuild = Find-MSBuild
-    & $msbuild (Join-Path $root 'game.sln') /t:Build "/p:Configuration=$Configuration" /p:Platform=Win32
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Configuration build failed with exit code $LASTEXITCODE."
+# cl and rc only work inside the MSVC environment, and Ninja invokes cl directly.
+function Enter-MsvcEnvironment {
+    param([string] $VisualStudio)
+
+    if ($env:VSCMD_ARG_TGT_ARCH -eq 'x64') {
+        return
+    }
+
+    $vcvars = Join-Path $VisualStudio 'VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path $vcvars)) {
+        throw "vcvars64.bat was not found at $vcvars."
+    }
+
+    & cmd.exe /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+        if ($_ -match '^([^=]+)=(.*)$') {
+            Set-Item -LiteralPath "Env:$($Matches[1])" -Value $Matches[2]
+        }
+    }
+}
+
+# Prefer whatever is on PATH, then the copy Visual Studio ships, so neither tool
+# has to be installed separately.
+function Resolve-Tool {
+    param([string] $Name, [string] $VisualStudio, [string] $BundledRelativePath)
+
+    $onPath = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($onPath) {
+        return $onPath.Source
+    }
+
+    $bundled = Join-Path $VisualStudio $BundledRelativePath
+    if (Test-Path $bundled) {
+        return $bundled
+    }
+
+    throw "$Name was not found on PATH or under $VisualStudio."
+}
+
+function Invoke-Build {
+    $vs = Get-VisualStudioPath
+    Enter-MsvcEnvironment -VisualStudio $vs
+
+    $cmake = Resolve-Tool -Name 'cmake' -VisualStudio $vs `
+        -BundledRelativePath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+    $ninja = Resolve-Tool -Name 'ninja' -VisualStudio $vs `
+        -BundledRelativePath 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+
+    $env:PATH = "$(Split-Path $ninja);$env:PATH"
+
+    # The linker fails with LNK1168 if the previous build is still running.
+    Get-Process stunt-car-racer-64, stunt-car-racer-64d -ErrorAction SilentlyContinue | Stop-Process -Force
+
+    $preset = $Config.ToLowerInvariant()
+
+    Push-Location $root
+    try {
+        & $cmake --preset $preset
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        & $cmake --build --preset $preset
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    finally {
+        Pop-Location
     }
 }
 
 switch ($Command) {
+    'build' { Invoke-Build }
+
     'run' {
-        Build-Game 'Release'
-        Start-Process -FilePath (Join-Path $root 'exe\stunt-car-racer-32.exe') -WorkingDirectory $root
+        Invoke-Build
+        Start-Process -FilePath (Join-Path $root "exe\$exeName") -WorkingDirectory $root -ArgumentList $Rest
     }
+
     'test' {
-        Build-Game 'Debug'
-        $testProcess = Start-Process -FilePath (Join-Path $root 'exe\stunt-car-racer-32d.exe') `
-            -ArgumentList '-test' -WorkingDirectory $root -NoNewWindow -Wait -PassThru
-        exit $testProcess.ExitCode
+        Invoke-Build
+        # GUI subsystem app: Out-String makes PowerShell wait for it to finish.
+        & (Join-Path $root "exe\$exeName") '-test' | Out-String | Write-Host
+        exit $LASTEXITCODE
+    }
+
+    'clean' {
+        Get-Process stunt-car-racer-64, stunt-car-racer-64d -ErrorAction SilentlyContinue | Stop-Process -Force
+        foreach ($path in @('build', 'exe')) {
+            $full = Join-Path $root $path
+            if (Test-Path $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+        }
     }
 }

@@ -3,6 +3,8 @@
 // Software 3D renderer — platform-independent public API
 // Platform-specific implementation lives in SoftwareRenderer.cpp
 
+#include "game.h" // Point2D, XRGB
+
 #include <cstdint>
 
 

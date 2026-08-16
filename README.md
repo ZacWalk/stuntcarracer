@@ -40,17 +40,25 @@ GPU acceleration. The pixels presented to the window are produced by code in
   ambient)
 - Affine 2D primitives for HUD, text and screen-space fans
 
-The final RGBA framebuffer is blitted to the window with `SetDIBitsToDevice`.
+The final RGBA framebuffer is blitted straight to the window by the platform
+layer's `present_pixels`, outside any paint handler, so the game keeps full
+control of its frame loop. Audio is XAudio2, reached through `pf::sound_buffer`.
 
 ## Building
 
-You need **Visual Studio** (with the Desktop C++ workload installed) to build
-this project. Open [game.sln](game.sln) and build the **Debug | Win32** or
-**Release | Win32** configuration, or run the *Build Debug Win32* / *Build
-Release Win32* task from VS Code. The output `StuntCarRacer.exe` is written
-under `output/Win32/<Configuration>/`.
+You need **Visual Studio** (with the Desktop C++ workload installed). From an
+x64 Developer PowerShell:
 
-The game is a single EXE file. All game data (tracks and sound) are contained as resources.
+```
+.\dd.ps1 build
+```
+
+or drive CMake directly with `cmake --preset release && cmake --build --preset release`.
+The output `exe\stunt-car-racer-64.exe` is a single EXE — all game data (tracks,
+sounds and textures) is compiled into it. The platform layer comes from the
+separate [platform-h](https://github.com/ZacWalk/platform-h) repository via
+`FetchContent`; a sibling `../platform-h` checkout is used automatically when
+present.
 
 ## How to Play
 

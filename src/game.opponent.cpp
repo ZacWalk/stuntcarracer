@@ -557,7 +557,7 @@ static SurfaceCoords GetSurfaceCoords(const TrackState& t, const int32_t piece, 
 {
 	if (segment < 0 || segment >= t.Track[piece].numSegments)
 	{
-		PlatformShowError(L"GetSurfaceCoords(opponent) segment out of range", L"Error");
+		ShowError(L"GetSurfaceCoords(opponent) segment out of range", L"Error");
 		return {};
 	}
 
@@ -1216,7 +1216,7 @@ void CarToCarCollision(GameState& player, const SoundState& sound)
 	if (cars_collided_delay > 0)
 		return;
 
-	PlatformSoundPlay(sound.HitCarSoundBuffer, false); // not looping
+	SoundPlay(sound.HitCarSoundBuffer, false); // not looping
 
 	cars_collided_delay = 5;
 }

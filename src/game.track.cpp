@@ -1850,18 +1850,18 @@ void ResetDrawBridge(const TrackState& t, GameState& p)
 
 static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 {
-	static wchar_t track_resource_names[NUM_TRACKS][32] =
+	static std::string_view track_resource_names[NUM_TRACKS] =
 	{
-		L"LittleRamp",
-		L"SteppingStones",
-		L"HumpBack",
-		L"BigRamp",
-		L"SkiJump",
-		L"DrawBridge",
-		L"HighJump",
-		L"RollerCoaster"
+		"LittleRamp.bin",
+		"SteppingStones.bin",
+		"HumpBack.bin",
+		"BigRamp.bin",
+		"SkiJump.bin",
+		"DrawBridge.bin",
+		"HighJump.bin",
+		"RollerCoaster.bin"
 	};
-	static char* track_buffer_ptrs[NUM_TRACKS];
+	static const uint8_t* track_buffer_ptrs[NUM_TRACKS];
 	static int32_t first_time = true;
 
 	// read all tracks on first call
@@ -1871,11 +1871,11 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 
 		for (int32_t n = 0; n < NUM_TRACKS; n++)
 		{
-			const auto buf = static_cast<char*>(PlatformLoadResource(track_resource_names[n], L"TRACK"));
-			if (buf == nullptr)
+			const auto buf = pf::embedded_resource_data(track_resource_names[n]);
+			if (buf.empty())
 				return false;
 
-			track_buffer_ptrs[n] = buf;
+			track_buffer_ptrs[n] = buf.data();
 		}
 	}
 

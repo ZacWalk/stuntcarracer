@@ -12,6 +12,8 @@
 //   - Function declarations exported by game.cpp and the game.* modules
 //
 
+#include "platform.h"
+
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -19,8 +21,92 @@
 struct SoundState;
 class SoftwareRenderer;
 struct SWTexture;
-struct PlatformSoundBuffer;
-struct Point2D;
+
+// ---------------------------------------------------------------------------
+// Amiga-era constants and small value types that used to live in the game's
+// own platform header
+// ---------------------------------------------------------------------------
+
+constexpr int32_t AMIGA_PAL_HZ = 3546895;
+constexpr int WINDOW_WIDTH = 640;
+constexpr int WINDOW_HEIGHT = 480;
+
+constexpr uint32_t D3DCOLOR_ARGB(const uint32_t a, const uint32_t r, const uint32_t g, const uint32_t b)
+{
+	return (a & 0xff) << 24 | (r & 0xff) << 16 | (g & 0xff) << 8 | b & 0xff;
+}
+
+constexpr uint32_t XRGB(const uint32_t r, const uint32_t g, const uint32_t b)
+{
+	return D3DCOLOR_ARGB(0xff, r, g, b);
+}
+
+struct PaletteColor
+{
+	uint8_t r, g, b;
+};
+
+struct Point2D
+{
+	int32_t x, y;
+};
+
+// The game speaks UTF-16 throughout; the platform speaks UTF-8.
+std::wstring format(std::wstring_view fmt, ...);
+
+inline void ShowError(const std::wstring_view message, const std::wstring_view title)
+{
+	pf::platform_show_error(pf::utf16_to_utf8(message), pf::utf16_to_utf8(title));
+}
+
+// Closes the main window; set by app_init.
+void GameClose();
+
+// Blits the software renderer's frame buffer to the main window.
+void GamePresent(const uint32_t* pixels, int cx, int cy);
+
+// Replaces the main window's menu bar.
+void GameSetMenu(std::vector<pf::menu_command> menu_def);
+
+// True while the window is minimised, so the frame loop can idle.
+bool GameIsMinimized();
+
+// The game runs happily with no audio device — and the headless tests never
+// create one — so every sound call has to tolerate a buffer that is not there.
+//
+// Volumes are kept in the Amiga's 0-64 units, which are a linear amplitude on a
+// 6-bit DAC, so the conversion the platform wants is a plain division.
+constexpr int32_t AMIGA_VOLUME_MAX = 64;
+constexpr float PAN_LEFT = -1.0f;
+constexpr float PAN_CENTER = 0.0f;
+constexpr float PAN_RIGHT = 1.0f;
+
+inline void SoundPlay(const pf::sound_buffer_ptr& b, const bool loop = false) { if (b) b->play(loop); }
+inline void SoundStop(const pf::sound_buffer_ptr& b) { if (b) b->stop(); }
+inline void SoundSetFrequency(const pf::sound_buffer_ptr& b, const uint32_t hz) { if (b) b->set_frequency(hz); }
+inline void SoundSetPan(const pf::sound_buffer_ptr& b, const float pan) { if (b) b->set_pan(pan); }
+inline void SoundSetPlayPosition(const pf::sound_buffer_ptr& b, const uint32_t pos) { if (b) b->set_play_position(pos); }
+
+inline void SoundSetVolume(const pf::sound_buffer_ptr& b, const int32_t amigaVolume)
+{
+	if (!b) return;
+	const auto clamped = amigaVolume < 0 || amigaVolume > AMIGA_VOLUME_MAX ? AMIGA_VOLUME_MAX : amigaVolume;
+	b->set_volume(static_cast<float>(clamped) / AMIGA_VOLUME_MAX);
+}
+
+inline uint32_t SoundPlayPosition(const pf::sound_buffer_ptr& b)
+{
+	return b ? b->play_position().value_or(0) : 0;
+}
+
+// Entry points implemented by the game and driven by main.cpp
+bool AppInit();
+void AppRun();
+void AppHandleFrameSize(int cx, int cy);
+void AppHandleKeyDown(uint32_t nChar);
+void AppHandleKeyUp(uint32_t nChar);
+void AppResetInput();
+int AppRunTests();
 
 // ---------------------------------------------------------------------------
 // Screen & rendering constants
@@ -472,7 +558,7 @@ void ResetPlayer(GameState& player);
 
 double LimitViewpointY(TrackState& track, GameState& player, double y);
 int32_t CalculateDisplaySpeed(const GameState& player);
-void FramesWheelsEngine(SoundState& sound, PlatformSoundBuffer* engineSoundBuffers[]);
+void FramesWheelsEngine(SoundState& sound, pf::sound_buffer_ptr engineSoundBuffers[]);
 void EngineSoundStopped();
 void CalculatePlayersRoadPosition(TrackState& track, GameState& player);
 void DrawOtherGraphics(GameState& player, const SoundState& sound);
@@ -544,13 +630,13 @@ struct SoundState
 	SoundState(SoundState&&) = default;
 	SoundState& operator=(SoundState&&) = default;
 
-	PlatformSoundBuffer* WreckSoundBuffer = nullptr;
-	PlatformSoundBuffer* HitCarSoundBuffer = nullptr;
-	PlatformSoundBuffer* GroundedSoundBuffer = nullptr;
-	PlatformSoundBuffer* CreakSoundBuffer = nullptr;
-	PlatformSoundBuffer* SmashSoundBuffer = nullptr;
-	PlatformSoundBuffer* OffRoadSoundBuffer = nullptr;
-	PlatformSoundBuffer* EngineSoundBuffers[8] = {};
+	pf::sound_buffer_ptr WreckSoundBuffer;
+	pf::sound_buffer_ptr HitCarSoundBuffer;
+	pf::sound_buffer_ptr GroundedSoundBuffer;
+	pf::sound_buffer_ptr CreakSoundBuffer;
+	pf::sound_buffer_ptr SmashSoundBuffer;
+	pf::sound_buffer_ptr OffRoadSoundBuffer;
+	pf::sound_buffer_ptr EngineSoundBuffers[8];
 	bool engineSoundPlaying = false;
 };
 

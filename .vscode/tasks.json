@@ -2,49 +2,53 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Debug Win32",
-            "type": "process",
-            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
+            "label": "Build Debug",
+            "type": "shell",
+            "command": "pwsh",
             "args": [
-                "game.sln",
-                "/p:Configuration=Debug",
-                "/p:Platform=Win32",
-                "/t:Build"
+                "-NoProfile",
+                "-File",
+                "${workspaceFolder}/dd.ps1",
+                "build",
+                "-Config",
+                "Debug"
             ],
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
             "problemMatcher": "$msCompile",
-            "detail": "Build Debug|Win32 configuration"
+            "detail": "CMake + Ninja via dd.ps1"
         },
         {
-            "label": "Build Release Win32",
-            "type": "process",
-            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
+            "label": "Build Release",
+            "type": "shell",
+            "command": "pwsh",
             "args": [
-                "game.sln",
-                "/p:Configuration=Release",
-                "/p:Platform=Win32",
-                "/t:Build"
+                "-NoProfile",
+                "-File",
+                "${workspaceFolder}/dd.ps1",
+                "build"
             ],
             "group": "build",
             "problemMatcher": "$msCompile",
-            "detail": "Build Release|Win32 configuration"
+            "detail": "CMake + Ninja via dd.ps1"
         },
         {
-            "label": "Rebuild Debug Win32",
-            "type": "process",
-            "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\MSBuild.exe",
+            "label": "Test",
+            "type": "shell",
+            "command": "pwsh",
             "args": [
-                "game.sln",
-                "/p:Configuration=Debug",
-                "/p:Platform=Win32",
-                "/t:Rebuild"
+                "-NoProfile",
+                "-File",
+                "${workspaceFolder}/dd.ps1",
+                "test"
             ],
-            "group": "build",
-            "problemMatcher": "$msCompile",
-            "detail": "Clean rebuild Debug|Win32"
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
         }
     ]
 }
