@@ -28,7 +28,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(platform_h
     GIT_REPOSITORY https://github.com/ZacWalk/platform-h.git
-    GIT_TAG        8e9be5de233d1797ce7a2b50fe663042469611a9
+    GIT_TAG        894afaf337c722c4eafa0ec6b91fa6b83e06966e
 )
 FetchContent_MakeAvailable(platform_h)
 
@@ -68,3 +68,10 @@ set_target_properties(stuntcarracer PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/exe"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/exe"
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(stuntcarracer_tests tests/smoke.cpp)
+    add_test(NAME stuntcarracer_unit COMMAND stuntcarracer_tests)
+    set_tests_properties(stuntcarracer_unit PROPERTIES TIMEOUT 30 LABELS stuntcarracer)
+endif()
