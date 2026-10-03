@@ -31,6 +31,14 @@ name with `pf::embedded_resource_data`.
 The vendored dd driver sets up the MSVC environment itself. Output lands in
 `exe/` (`stunt-car-racer-64.exe`, `-64d` for Debug). An unfiltered
 `.\dd.ps1 test` also opens the game's window for a second as a smoke check.
+The vendored [dd](https://github.com/ZacWalk/dd) files are the upstream
+`dd.ps1` and `.dd/` tree; [docs/dd-upstream.json](docs/dd-upstream.json)
+records their hashes. Keep project configuration in `dd.psd1`; the one
+dependency, platform-h, is pinned by the `GIT_TAG` in `CMakeLists.txt`, not in
+`cmake/dd-dependencies.json`. Use `.\dd.ps1 commands --json` to list the
+project command surface. Upstream dd owns the documentation for
+[CLI and MCP mode](https://github.com/ZacWalk/dd/blob/main/docs/mcp.md#two-modes)
+and [built-in commands](https://github.com/ZacWalk/dd/blob/main/docs/cli.md#commands).
 
 Tests run without creating a window, write a per-frame log to stdout, and exit
 with code `0` on success / non-zero on any failure (final `Total failures: N`
@@ -68,25 +76,3 @@ window each frame.
    This keeps depth precision usable across the huge near/far ratio (0.5 /
    131072) — the standard near→0 mapping crushes everything past view-z ≈
    1000 into the last few double ULPs and produces far-over-near artifacts.
-
-## dd build system
-
-This repo uses the vendored dd build system. dd has two modes.
-
-**CLI mode** is the default; each verb runs once and exits:
-
-```pwsh
-.\dd.ps1 test                  # build both configs and run the suite
-.\dd.ps1 build debug
-.\dd.ps1 doctor --json
-.\dd.ps1 commands --json       # list this project's own commands
-```
-
-**MCP mode** — `.\dd.ps1 mcp` turns the process into a stdio JSON-RPC server for an
-MCP client, adapting typed requests onto CLI mode. It owns stdout for protocol
-messages, so it prints no result envelope and rejects `--json`. Register it with
-`.\dd.ps1 ide --mcp`.
-
-Project settings live in `dd.psd1`; dependency pins live in
-`cmake/dd-dependencies.json` with `dependencies.owner = 'dd'`. Vendored dd file
-hashes are recorded in `docs/dd-upstream.json`.
