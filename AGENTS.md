@@ -24,12 +24,13 @@ name with `pf::embedded_resource_data`.
 ## Build & test
 
 ```pwsh
-.\dd.ps1 build          # both configs; or: .\dd.ps1 build release
-.\dd.ps1 test           # build, then run the headless self-tests
+.\dd.ps1 build                        # both configs; or: .\dd.ps1 build release
+.\dd.ps1 test --label stuntcarracer   # build both, then run the headless self-tests
 ```
 
-`dd.ps1` locates Visual Studio, enters the MSVC environment and falls back to
-the CMake and Ninja that ship with it. Output lands in `exe/`.
+The vendored dd driver sets up the MSVC environment itself. Output lands in
+`exe/` (`stunt-car-racer-64.exe`, `-64d` for Debug). An unfiltered
+`.\dd.ps1 test` also opens the game's window for a second as a smoke check.
 
 Tests run without creating a window, write a per-frame log to stdout, and exit
 with code `0` on success / non-zero on any failure (final `Total failures: N`
