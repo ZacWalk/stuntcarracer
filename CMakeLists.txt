@@ -74,4 +74,7 @@ if(BUILD_TESTING)
     add_executable(stuntcarracer_tests tests/smoke.cpp)
     add_test(NAME stuntcarracer_unit COMMAND stuntcarracer_tests)
     set_tests_properties(stuntcarracer_unit PROPERTIES TIMEOUT 30 LABELS stuntcarracer)
+
+    add_test(NAME stuntcarracer_selftest COMMAND stuntcarracer -test)
+    set_tests_properties(stuntcarracer_selftest PROPERTIES TIMEOUT 120 LABELS stuntcarracer)
 endif()
