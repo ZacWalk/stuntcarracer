@@ -3,6 +3,7 @@
 
 #include "game.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <memory>
@@ -25,11 +26,37 @@ namespace
 
 	struct game_reactor final : pf::frame_reactor
 	{
-		uint32_t handle_message(pf::window_frame_ptr, const pf::message_type message,
+		uint32_t handle_message(pf::window_frame_ptr window, const pf::message_type message,
 		                        const pf::message_params&) override
 		{
+			if (message == pf::message_type::create)
+			{
+				// app_init runs before the platform creates the window, so this is
+				// the first point at which the title and the position stick.
+				window->set_text("Stunt Car Racer");
+
+				// The process is DPI aware: scale the 640x480 window so it comes
+				// up the same physical size on every monitor.
+				const auto scale = window->get_dpi_scale();
+				const auto screen = pf::platform_screen_size();
+				const int cx = std::min(static_cast<int>(WINDOW_WIDTH * scale), screen.cx);
+				const int cy = std::min(static_cast<int>(WINDOW_HEIGHT * scale), screen.cy);
+				const int left = std::max(0, (screen.cx - cx) / 2);
+				const int top = std::max(0, (screen.cy - cy) / 2);
+				window->move_window({left, top, left + cx, top + cy});
+				return 0;
+			}
+
 			if (message == pf::message_type::erase_background)
 				return 1; // the frame loop paints every pixel
+
+			// The platform leaves WM_CLOSE to the reactor; without this the close
+			// box and Alt+F4 do nothing and only Game > Exit can end the game.
+			if (message == pf::message_type::close)
+			{
+				window->close();
+				return 0;
+			}
 
 			if (message == pf::message_type::kill_focus)
 				AppResetInput();
@@ -79,6 +106,11 @@ void GameClose()
 	if (g_frame) g_frame->close();
 }
 
+pf::frame_reactor_ptr CreateGameReactor()
+{
+	return std::make_shared<game_reactor>();
+}
+
 void GamePresent(const uint32_t* pixels, const int cx, const int cy)
 {
 	if (g_frame) g_frame->present_pixels(pixels, cx, cy);
@@ -109,17 +141,10 @@ app_init_result app_init(const pf::window_frame_ptr& main_frame,
 	pf::config_set_app_name("stuntcarracer");
 
 	g_frame = main_frame;
-	main_frame->set_reactor(std::make_shared<game_reactor>());
+	main_frame->set_reactor(CreateGameReactor());
 
 	if (!AppInit())
 		return {false, 1};
-
-	main_frame->set_text("Stunt Car Racer");
-
-	const auto screen = pf::platform_screen_size();
-	const int left = std::max(0, (screen.cx - WINDOW_WIDTH) / 2);
-	const int top = std::max(0, (screen.cy - WINDOW_HEIGHT) / 2);
-	main_frame->move_window({left, top, left + WINDOW_WIDTH, top + WINDOW_HEIGHT});
 
 	app_init_result result;
 	result.main_loop = []

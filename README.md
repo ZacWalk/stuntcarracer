@@ -19,7 +19,9 @@ acceleration:
 - 4×4 matrix pipeline (world / view / perspective), near-plane clipping in
   homogeneous space
 - Edge-function rasterizer with perspective-correct interpolation via 1/w
-- Z-buffer depth testing, backface culling, flat shading with one directional light
+- Z-buffer depth testing; both windings drawn, since the single-sided track
+  vanished under back-face culling whenever the eye dipped below the road; flat
+  shading with one directional light
 - Affine 2D primitives for the HUD and text
 
 The finished RGBA framebuffer is blitted to the window by the platform layer's
@@ -32,8 +34,19 @@ All game data — tracks, sounds and textures — is compiled into the executabl
 
 Arrow keys drive, <kbd>Ctrl</kbd>+<kbd>Up</kbd> is boost, <kbd>Space</kbd>
 toggles the camera. In the track menu, <kbd>1</kbd>–<kbd>8</kbd> pick one of the
-eight tracks and <kbd>S</kbd> starts the race. <kbd>F5</kbd> shows statistics and
+eight tracks and <kbd>S</kbd> starts the race. <kbd>Esc</kbd> returns to the
+track menu, <kbd>P</kbd>/<kbd>O</kbd> pause and resume, <kbd>R</kbd> turns the
+car round and <kbd>Z</kbd> restarts the race. <kbd>F5</kbd> shows statistics and
 <kbd>F9</kbd>/<kbd>F10</kbd> change game speed.
+
+## Known differences
+
+- **No game-over state.** The original ended the game six seconds after the
+  finish: the cars stopped, the engine fell silent and it showed *GAME OVER:
+  Press 'M' for track menu*. This port never enters that state, so the *RACE
+  WON* or *RACE LOST* banner keeps flashing and the race carries on until
+  <kbd>Esc</kbd> returns to the track menu or <kbd>Z</kbd> restarts it.
+  `GAME_OVER` is still declared and handled in `src/game.cpp`; nothing sets it.
 
 ## Building
 

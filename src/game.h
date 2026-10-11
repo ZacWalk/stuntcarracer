@@ -62,6 +62,9 @@ inline void ShowError(const std::wstring_view message, const std::wstring_view t
 // Closes the main window; set by app_init.
 void GameClose();
 
+// The main window's event handler. app_init installs it; the tests drive it.
+pf::frame_reactor_ptr CreateGameReactor();
+
 // Blits the software renderer's frame buffer to the main window.
 void GamePresent(const uint32_t* pixels, int cx, int cy);
 
@@ -106,7 +109,12 @@ void AppHandleFrameSize(int cx, int cy);
 void AppHandleKeyDown(uint32_t nChar);
 void AppHandleKeyUp(uint32_t nChar);
 void AppResetInput();
+// One pass of the frame loop while the window is minimised; the tests call it.
+void AppIdleMinimized();
 int AppRunTests();
+
+// The menu bar, with its accelerators. AppInit installs it; the tests read it.
+std::vector<pf::menu_command> BuildGameMenu();
 
 // ---------------------------------------------------------------------------
 // Screen & rendering constants
