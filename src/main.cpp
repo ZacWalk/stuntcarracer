@@ -33,7 +33,7 @@ namespace
 			{
 				// app_init runs before the platform creates the window, so this is
 				// the first point at which the title and the position stick.
-				window->set_text("Stunt Car Racer");
+				window->set_text(g_soundAvailable ? "Stunt Car Racer" : "Stunt Car Racer (no sound)");
 
 				// The process is DPI aware: scale the 640x480 window so it comes
 				// up the same physical size on every monitor.
