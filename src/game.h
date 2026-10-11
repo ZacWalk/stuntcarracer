@@ -113,6 +113,10 @@ void AppResetInput();
 void AppIdleMinimized();
 int AppRunTests();
 
+// False when AppInit found no usable audio device; the game then runs silent
+// and its window title says so.
+extern bool g_soundAvailable;
+
 // The menu bar, with its accelerators. AppInit installs it; the tests read it.
 std::vector<pf::menu_command> BuildGameMenu();
 

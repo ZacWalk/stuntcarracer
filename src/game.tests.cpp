@@ -702,6 +702,13 @@ namespace
 
 		reactor->handle_message(frame, pf::message_type::close, {});
 		log.check(recorder->closed, "the close box closes the window");
+
+		// Without an audio device the game starts silent, and says so in its
+		// title rather than in a modal box ahead of the window.
+		g_soundAvailable = false;
+		reactor->handle_message(frame, pf::message_type::create, {});
+		log.check(recorder->text == "Stunt Car Racer (no sound)", "a silent game says so in its title");
+		g_soundAvailable = true;
 	}
 } // namespace
 

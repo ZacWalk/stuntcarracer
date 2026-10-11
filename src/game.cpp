@@ -42,6 +42,7 @@ constexpr int32_t MIN_EYE_ABOVE_ROAD = 60;
 GameState g_gameState;
 TrackState g_trackState;
 SoundState g_soundState;
+bool g_soundAvailable = true;
 
 GameModeType g_gameMode = TRACK_MENU;
 
@@ -1275,15 +1276,10 @@ bool AppInit()
 	// Create rendering resources
 	CreateResources();
 
-	if (!pf::sound_init())
-	{
-		ShowError(L"Failed to initialise audio", L"Warning");
-		return true; // continue without sound
-	}
-
-	if (!SetupSoundBuffers(g_soundState))
-		ShowError(L"Failed to set up sound buffers", L"Warning");
-
+	// Without a usable audio device the game runs silent and its title says so.
+	// A modal warning here stopped start-up before the window existed; on a
+	// machine with no sound, such as a CI runner, the box was all there was.
+	g_soundAvailable = pf::sound_init() && SetupSoundBuffers(g_soundState);
 	return true;
 }
 
