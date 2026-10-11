@@ -26,7 +26,8 @@ acceleration:
 
 The finished RGBA framebuffer is blitted to the window by the platform layer's
 `present_pixels`, outside any paint handler, so the game keeps control of its
-frame loop. Audio is XAudio2 through `pf::sound_buffer`.
+frame loop. Audio is XAudio2 through `pf::sound_buffer`; without a usable audio
+device the game runs silent and its title says "(no sound)".
 
 All game data — tracks, sounds and textures — is compiled into the executable.
 
