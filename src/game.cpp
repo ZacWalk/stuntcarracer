@@ -677,6 +677,8 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 		bFrameMoved = true;
 }
 
+// A pause belongs to the race or preview it was taken in. Carried over, the
+// next screen comes up frozen with nothing on it to say why.
 static void StartGame()
 {
 	g_gameState.bNewGame = true;
@@ -687,7 +689,7 @@ static void StartGame()
 	gameEndTime = 0;
 	g_gameState.boostReserve = g_trackState.StandardBoost;
 	g_gameState.boostUnit = 0;
-	bPlayerPaused = bOpponentPaused = false;
+	bPlayerPaused = bOpponentPaused = bPaused = false;
 }
 
 static void SelectTrack()
@@ -695,7 +697,7 @@ static void SelectTrack()
 	g_gameState.bNewGame = true;
 	ResetPlayer(g_gameState);
 	g_gameMode = TRACK_PREVIEW;
-	bPlayerPaused = bOpponentPaused = false;
+	bPlayerPaused = bOpponentPaused = bPaused = false;
 }
 
 
@@ -1060,16 +1062,9 @@ void DestroySoundBuffers(SoundState& s)
 		s.EngineSoundBuffers[i].reset();
 }
 
-bool AppInit()
+// Built apart from AppInit so the self-tests can check it without a window.
+std::vector<pf::menu_command> BuildGameMenu()
 {
-	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
-	{
-		ShowError(L"Failed to initialize renderer", L"Error");
-		return false;
-	}
-
-	// Build menu definition and create menus
-
 	auto sep = [] { return pf::menu_command{}; };
 
 	auto isMenu = [] { return g_gameMode == TRACK_MENU; };
@@ -1079,6 +1074,9 @@ bool AppInit()
 	auto hasTrack = [] { return g_trackState.TrackID != NO_TRACK; };
 
 	// --- Game menu ---
+	// Start Race keeps a written hint and no accelerator: S is read by
+	// AppHandleKeyDown, and in a race it toggles the camera, which an
+	// accelerator would swallow. The platform appends every bound key itself.
 	pf::menu_command gameMenu;
 	gameMenu.text = "&Game";
 	gameMenu.children = {
@@ -1087,29 +1085,14 @@ bool AppInit()
 			[]
 			{
 				if (g_gameMode == TRACK_MENU && g_trackState.TrackID != NO_TRACK)
-				{
-					g_gameState.bNewGame = true;
-					ResetPlayer(g_gameState);
-					g_gameMode = TRACK_PREVIEW;
-					bPlayerPaused = bOpponentPaused = false;
-				}
+					SelectTrack();
 				else if (g_gameMode == TRACK_PREVIEW)
-				{
-					g_gameState.bNewGame = true;
-					g_gameMode = GAME_IN_PROGRESS;
-					ResetLapData(g_gameState, OPPONENT);
-					ResetLapData(g_gameState, PLAYER);
-					gameStartTime = pf::platform_get_time();
-					gameEndTime = 0;
-					g_gameState.boostReserve = g_trackState.StandardBoost;
-					g_gameState.boostUnit = 0;
-					bPlayerPaused = bOpponentPaused = false;
-				}
+					StartGame();
 			},
 			[=] { return (isMenu() && hasTrack()) || isPreview(); }
 		},
 		{
-			"Back to &Menu\tEsc", IDM_BACK_TO_MENU,
+			"Back to &Menu", IDM_BACK_TO_MENU,
 			[]
 			{
 				if (g_gameMode != TRACK_MENU)
@@ -1117,24 +1100,31 @@ bool AppInit()
 					g_gameMode = TRACK_MENU;
 					g_gameState.opponentsID = NO_OPPONENT;
 					ResetDrawBridge(g_trackState, g_gameState);
+					bPaused = false;
 				}
 			},
-			[=] { return !isMenu(); }
+			[=] { return !isMenu(); },
+			nullptr,
+			pf::key_binding{pf::platform_key::Escape}
 		},
 		sep(),
 		{
-			"&Pause\tP", IDM_PAUSE,
+			"&Pause", IDM_PAUSE,
 			[] { bPaused = true; },
-			[=] { return (isGame() || isPreview()) && !bPaused; }
+			[=] { return (isGame() || isPreview()) && !bPaused; },
+			nullptr,
+			pf::key_binding{'P'}
 		},
 		{
-			"R&esume\tO", IDM_RESUME,
+			"R&esume", IDM_RESUME,
 			[] { bPaused = false; },
-			[] { return bPaused; }
+			[] { return bPaused; },
+			nullptr,
+			pf::key_binding{'O'}
 		},
 		sep(),
 		{
-			"&Reverse Car\tR", IDM_REVERSE_CAR,
+			"&Reverse Car", IDM_REVERSE_CAR,
 			[]
 			{
 				if (g_gameMode == GAME_IN_PROGRESS)
@@ -1143,7 +1133,9 @@ bool AppInit()
 					g_gameState.INITIALISE_PLAYER = true;
 				}
 			},
-			[=] { return isGame(); }
+			[=] { return isGame(); },
+			nullptr,
+			pf::key_binding{'R'}
 		},
 		sep(),
 		{
@@ -1190,10 +1182,11 @@ bool AppInit()
 			[] { return bOutsideView; }
 		},
 		{
-			"Show S&tats\tF5", IDM_SHOW_STATS,
+			"Show S&tats", IDM_SHOW_STATS,
 			[] { bShowStats = !bShowStats; },
 			nullptr,
-			[] { return bShowStats; }
+			[] { return bShowStats; },
+			pf::key_binding{pf::platform_key::F5}
 		},
 		sep(),
 	};
@@ -1218,13 +1211,18 @@ bool AppInit()
 	speedMenu.text = "S&peed";
 	speedMenu.children = {
 		{
-			"&Increase Speed\tF9", IDM_SPEED_INCREASE,
+			"&Increase Speed", IDM_SPEED_INCREASE,
 			[] { if (frameGap > 1) frameGap--; },
-			[] { return frameGap > 1; }
+			[] { return frameGap > 1; },
+			nullptr,
+			pf::key_binding{pf::platform_key::F9}
 		},
 		{
-			"&Decrease Speed\tF10", IDM_SPEED_DECREASE,
-			[] { frameGap++; }
+			"&Decrease Speed", IDM_SPEED_DECREASE,
+			[] { frameGap++; },
+			nullptr,
+			nullptr,
+			pf::key_binding{pf::platform_key::F10}
 		},
 	};
 
@@ -1233,26 +1231,43 @@ bool AppInit()
 	debugMenu.text = "&Debug";
 	debugMenu.children = {
 		{
-			"Pause &Player\tF6", IDM_PAUSE_PLAYER,
+			"Pause &Player", IDM_PAUSE_PLAYER,
 			[] { bPlayerPaused = !bPlayerPaused; },
 			nullptr,
-			[] { return bPlayerPaused; }
+			[] { return bPlayerPaused; },
+			pf::key_binding{pf::platform_key::F6}
 		},
 		{
-			"Pause &Opponent\tF7", IDM_PAUSE_OPPONENT,
+			"Pause &Opponent", IDM_PAUSE_OPPONENT,
 			[] { bOpponentPaused = !bOpponentPaused; },
 			nullptr,
-			[] { return bOpponentPaused; }
+			[] { return bOpponentPaused; },
+			pf::key_binding{pf::platform_key::F7}
 		},
 		sep(),
 		{
-			"&Restart Race\tZ", IDM_RESTART_RACE,
-			[] { g_gameState.bNewGame = true; },
-			[=] { return isGame() || isOver(); }
+			// A restart is a new race on the same track: lap count, boost and the
+			// finish banner go back to their starting values along with the cars.
+			"&Restart Race", IDM_RESTART_RACE,
+			[] { StartGame(); },
+			[=] { return isGame() || isOver(); },
+			nullptr,
+			pf::key_binding{'Z'}
 		},
 	};
 
-	GameSetMenu({gameMenu, trackMenu, viewMenu, speedMenu, debugMenu});
+	return {gameMenu, trackMenu, viewMenu, speedMenu, debugMenu};
+}
+
+bool AppInit()
+{
+	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
+	{
+		ShowError(L"Failed to initialize renderer", L"Error");
+		return false;
+	}
+
+	GameSetMenu(BuildGameMenu());
 
 	// Perform application initialization
 	InitialiseData(g_trackState);
@@ -1272,6 +1287,14 @@ bool AppInit()
 	return true;
 }
 
+// The race stands still while the window is minimised, so the engine must
+// too: it is a looping sound, and only OnFrameMove would otherwise stop it.
+void AppIdleMinimized()
+{
+	StopEngineSound();
+	AppResetInput();
+}
+
 void AppRun()
 {
 	double previousTime = pf::platform_get_time();
@@ -1281,7 +1304,7 @@ void AppRun()
 	{
 		if (GameIsMinimized())
 		{
-			AppResetInput();
+			AppIdleMinimized();
 			pf::platform_sleep(50);
 			continue;
 		}

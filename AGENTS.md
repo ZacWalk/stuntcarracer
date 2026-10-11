@@ -5,15 +5,18 @@ This is a Windows C++ port of the classic game **Stunt Car Racer** (originally b
 ## Source files (src/)
 
 - **main.cpp** — Binds the game to the shared platform: `app_init`, the window
-  reactor (input, resize, focus) and the hand-off to the game's own frame loop
+  reactor (create, close, input, resize, focus) and the hand-off to the game's
+  own frame loop. `app_init` runs before the platform creates the window, so
+  anything that needs the window (title, size) belongs in the reactor's
+  `create`, and the reactor must close the window on `close` itself
 - **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs, the null-safe sound helpers
-- **game.cpp** — Top-level game logic: app entry points, frame loop, palette/resources/sound setup, viewpoints, sin/cos table, car model construction & rendering, world transforms
+- **game.cpp** — Top-level game logic: app entry points, frame loop, the menu bar and its accelerators (`BuildGameMenu`), palette/resources/sound setup, viewpoints, sin/cos table, car model construction & rendering, world transforms
 - **game.backdrop.cpp** — Sky/ground horizon and distant scenery rendering
 - **game.drive.cpp** — Car physics and player driving behaviour
 - **game.opponent.cpp** — Opponent AI, car-to-car collision detection, race position tracking
 - **game.track.cpp** — Track data loading, conversion, and rendering
 - **render.software.h / .cpp** — Software 3D renderer, platform-independent
-- **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks)
+- **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks, plus the menu shortcuts, the pause and minimise rules, and the window reactor against a fake frame)
 
 The platform layer (windowing, input, menus, audio, timers) lives in the shared
 **platform-h** repository behind the `pf::` namespace, and no Windows SDK header
