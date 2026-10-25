@@ -1,4 +1,5 @@
 src/output/
+build/
 ipch/
 .vs/
 *.suo
@@ -12,3 +13,4 @@ debug_trace.log
 debug.txt
 test_results.log
 
+/.dd/state/

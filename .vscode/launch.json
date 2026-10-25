@@ -2,26 +2,26 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug (Win32)",
+            "name": "Debug (x64)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/output/Win32/Debug/StuntCarRacer.exe",
+            "program": "${workspaceFolder}/exe/stunt-car-racer-64d.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "preLaunchTask": "Build Debug Win32"
+            "preLaunchTask": "Build Debug"
         },
         {
-            "name": "Release (Win32)",
+            "name": "Release (x64)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/output/Win32/Release/StuntCarRacer.exe",
+            "program": "${workspaceFolder}/exe/stunt-car-racer-64.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "preLaunchTask": "Build Release Win32"
+            "preLaunchTask": "Build Release"
         }
     ]
 }

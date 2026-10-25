@@ -11,6 +11,8 @@
 //   - World transform matrices for the player car, opponent car and track
 //
 
+#include <algorithm>
+#include <cmath>
 #include <ctime>
 
 #include "platform.h"
@@ -21,12 +23,26 @@ using namespace std::string_view_literals;
 
 
 constexpr int32_t DEFAULT_FRAME_GAP = 4;
+constexpr double SIMULATION_STEP_SECONDS = 1.0 / 25.0;
 
-constexpr int32_t HEIGHT_ABOVE_ROAD = 100;
+// Inside-view camera height above the car body, in render-space world units.
+// The original 100 sat the eye very close to the road; combined with
+// the road being a single-sided surface, suspension dives and bump tilts could
+// pop the eye through the tarmac and the road would vanish (back-face culled).
+// 180 keeps the view feeling first-person while leaving headroom for normal
+// suspension travel.
+constexpr int32_t HEIGHT_ABOVE_ROAD = 180;
+
+// Hard floor: the eye is never allowed closer than this many world units to the
+// road surface beneath the car. Belt-and-braces against the see-through-track
+// artefact even if HEIGHT_ABOVE_ROAD is reduced or a future change lets the
+// car body sink further than LimitViewpointY currently permits.
+constexpr int32_t MIN_EYE_ABOVE_ROAD = 60;
 
 GameState g_gameState;
 TrackState g_trackState;
 SoundState g_soundState;
+bool g_soundAvailable = true;
 
 GameModeType g_gameMode = TRACK_MENU;
 
@@ -34,43 +50,188 @@ std::vector<SWTexture> g_roadTexture;
 
 SoftwareRenderer g_renderer;
 
-uint32_t lastInput = 0;
+static uint32_t lastInput = 0;
 static bool ctrlHeld = false;
 
-int32_t frameGap = DEFAULT_FRAME_GAP;
+static int32_t frameGap = DEFAULT_FRAME_GAP;
 static bool bFrameMoved = false;
 
-bool bShowStats = false;
-bool bPaused = false;
-bool bPlayerPaused = false;
-bool bOpponentPaused = false;
-bool bOutsideView = false;
-double gameStartTime, gameEndTime;
+static bool bShowStats = false;
+static bool bPaused = false;
+static bool bPlayerPaused = false;
+static bool bOpponentPaused = false;
+static bool bOutsideView = false;
+static double gameStartTime, gameEndTime;
 
-double g_fpsTime = 0.0;
-int g_fpsFrameCount = 0;
-float g_fps = 0.0f;
+static double g_fpsTime = 0.0;
+static int g_fpsFrameCount = 0;
+static double g_fps = 0.0f;
 
-static int32_t player1_x = 0, player1_y = 0, player1_z = 0;
-static int32_t player1_x_angle = 0;
-int32_t player1_y_angle = 0;
-static int32_t player1_z_angle = 0;
+// game.cpp's local mirror of the player car's pose. Position is in render-space
+// world units; angles are in MAX_ANGLE units (Amiga convention).
+static double player1_x = 0.0, player1_y = 0.0, player1_z = 0.0;
+static double player1_x_angle = 0.0;
+static double player1_y_angle = 0.0;
+static double player1_z_angle = 0.0;
 
-static int32_t opponent_x = 0, opponent_y = 0, opponent_z = 0;
-static float opponent_x_angle = 0.0f, opponent_y_angle = 0.0f, opponent_z_angle = 0.0f;
+// game.cpp's local mirror of the opponent's pose. Position is in render-space
+// world units; angles are in MAX_ANGLE units (Amiga convention) inherited
+// directly from OpponentPose.
+static double opponent_x = 0, opponent_y = 0, opponent_z = 0;
+static double opponent_x_angle = 0.0f, opponent_y_angle = 0.0f, opponent_z_angle = 0.0f;
 
-static int32_t viewpoint1_x, viewpoint1_y, viewpoint1_z;
-static int32_t viewpoint1_x_angle, viewpoint1_y_angle, viewpoint1_z_angle;
-static int32_t target_x, target_y, target_z;
+// Viewpoint position, in render-space world units. The viewpoint calculators
+// below produce render-space coordinates directly so the renderer (matView,
+// vEyePt, DrawBackdrop) can consume them without any further scale conversion.
+static double viewpoint1_x, viewpoint1_y, viewpoint1_z;
+// Viewpoint orientation, in double radians. Set by the per-frame viewpoint
+// calculators and consumed directly by the renderer (Mat4RotationX/Y/Z and
+// DrawBackdrop), so no further unit conversion is required.
+static double viewpoint1_x_angle = 0.0f,
+              viewpoint1_y_angle = 0.0f,
+              viewpoint1_z_angle = 0.0f;
+// Camera lookat target, also in render-space world units (matches viewpoint1_*).
+static double target_x, target_y, target_z;
+
+// Render-only smoothed pitch/roll for the car body and trailing camera.
+// Driven toward the road-surface plane (derived from the three wheel
+// road-height samples) when the car is grounded, or toward the car's physics
+// angles when airborne. Keeps the visible orientation flush with the track
+// even though the underlying spring-damper physics angles can lag.
+static double render_x_angle = 0;
+static double render_z_angle = 0;
+
+// Render-only car height (world-space, +Y up) used by SetCarWorldTransform.
+static double render_wheel_y[4] = {};
+// When grounded it is anchored to the road plane sampled under the wheels so
+// the visible car sits flush with the track instead of following the lagged
+// physics player_y (which is allowed to sink up to MAX_BELOW_ROAD into the
+// surface). Driven by UpdateRenderAngles each frame.
+static double render_car_y = 0;
+
+// Compute the angle (in MAX_ANGLE units) whose sine equals s. Used to convert
+// a road-plane slope into an Amiga-style angle.
+static double AngleFromSin(double s)
+{
+	if (s > 1.0) s = 1.0;
+	else if (s < -1.0) s = -1.0;
+	const double rads = std::asin(s);
+	return rads * MAX_ANGLE / (2.0 * PI);
+}
+
+// Wrap an angle delta into the range [-MAX_ANGLE/2, +MAX_ANGLE/2] so that
+// shortest-path lerping works across the 0/MAX_ANGLE seam.
+static double WrapAngleSigned(double a)
+{
+	a = WrapAngle(a);
+	if (a >= MAX_ANGLE / 2) a -= MAX_ANGLE;
+	return a;
+}
+
+// Update render_x_angle / render_z_angle. When grounded, target = road plane
+// derived from the three wheel road-height samples (inverting the math in
+// CalculateActualWheelHeights). When airborne, target = physics angles.
+static void UpdateRenderAngles()
+{
+	double target_x_angle = player1_x_angle;
+	double target_z_angle = player1_z_angle;
+
+	const bool grounded = g_gameState.touching_road &&
+		g_gameState.front_left_road_height != GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.front_right_road_height != GameState::OFF_ROAD_HEIGHT &&
+		g_gameState.rear_road_height != GameState::OFF_ROAD_HEIGHT;
+
+	if (grounded)
+	{
+		// Inverting CalculateActualWheelHeights():
+		//   front_avg_road - rear_road = sin_x * 4096   (road_height units)
+		//   front_left_road - front_right_road = sin_z * 2048
+		const double front_avg_road =
+			(g_gameState.front_left_road_height + g_gameState.front_right_road_height) / 2;
+		const double pitch_sin = (front_avg_road - g_gameState.rear_road_height) / 4096.0;
+		const double roll_sin =
+			(g_gameState.front_left_road_height - g_gameState.front_right_road_height) / 2048.0;
+		// DrawWorld uses the opposite X/Z rotation convention from the physics
+		// coefficients, just as CarBehaviour's returned airborne angles do.
+		target_x_angle = WrapAngle(-AngleFromSin(pitch_sin));
+		target_z_angle = WrapAngle(-AngleFromSin(roll_sin));
+	}
+
+	if (g_gameState.on_chains)
+	{
+		// A respawn is a new placement, not a continuation of the crash pose.
+		render_x_angle = target_x_angle;
+		render_z_angle = target_z_angle;
+	}
+	else
+	{
+		// Shortest-path lerp toward target with a moderate time constant.
+		constexpr double kSmoothingFactor = 0.25; // 1/4 step per frame; ~4 frames to settle
+		const double dx = WrapAngleSigned(target_x_angle - render_x_angle);
+		const double dz = WrapAngleSigned(target_z_angle - render_z_angle);
+		render_x_angle = WrapAngle(render_x_angle + dx * kSmoothingFactor);
+		render_z_angle = WrapAngle(render_z_angle + dz * kSmoothingFactor);
+	}
+
+	// Drive the render-only car height. When grounded, place the origin high
+	// enough for every transformed wheel-bottom point to clear its road sample.
+	// When airborne, fall back to the physics height with the original offset.
+	if (grounded)
+	{
+		const double x_angle = render_x_angle * ANGLE_TO_RADIANS;
+		const double z_angle = render_z_angle * ANGLE_TO_RADIANS;
+		const double sin_x = std::sin(x_angle);
+		const double cos_x = std::cos(x_angle);
+		const double sin_z = std::sin(z_angle);
+		const double cos_z = std::cos(z_angle);
+
+		// The visual pitch/roll deliberately lags the road plane. At an abrupt
+		// ramp transition, centring the model on the average road height lets
+		// its still-level front wheels pass below the rising road. Choose the
+		// origin height required by the highest of the three wheel-bottom points,
+		// transformed in the same Z-then-X order as SetCarWorldTransform.
+		auto requiredOrigin = [&](const double road_height, const double x, const double z)
+		{
+			constexpr double wheel_bottom_y = -VCAR_HEIGHT / 4.0;
+			const double after_z_y = x * sin_z + wheel_bottom_y * cos_z;
+			const double rotated_y = after_z_y * cos_x - z * sin_x;
+			return road_height / 16.0 - rotated_y;
+		};
+
+		const double rear_left_origin = requiredOrigin(
+			g_gameState.rear_road_height, -VCAR_WIDTH * 3.0 / 8.0, -VCAR_LENGTH / 2.0);
+		const double rear_right_origin = requiredOrigin(
+			g_gameState.rear_road_height, VCAR_WIDTH * 3.0 / 8.0, -VCAR_LENGTH / 2.0);
+		const double front_right_origin = requiredOrigin(
+			g_gameState.front_right_road_height, VCAR_WIDTH * 3.0 / 8.0, VCAR_LENGTH / 2.0);
+		const double front_left_origin = requiredOrigin(
+			g_gameState.front_left_road_height, -VCAR_WIDTH * 3.0 / 8.0, VCAR_LENGTH / 2.0);
+		constexpr double visualRideClearance = 2.0;
+		render_car_y = std::max({rear_left_origin, rear_right_origin, front_right_origin, front_left_origin}) +
+			visualRideClearance;
+
+		constexpr double maxSuspensionDrop = 14.0;
+		const double wheelOrigins[] = {
+			rear_left_origin, rear_right_origin, front_left_origin, front_right_origin
+		};
+		for (int wheel = 0; wheel < 4; ++wheel)
+			render_wheel_y[wheel] = std::clamp(wheelOrigins[wheel] - render_car_y,
+				-maxSuspensionDrop, 0.0);
+	}
+	else
+	{
+		render_car_y = -player1_y + VCAR_HEIGHT * 3 / 8;
+		std::fill(std::begin(render_wheel_y), std::end(render_wheel_y), 0.0);
+	}
+}
 
 void InitialiseData(TrackState& t)
 {
-	CreateSinCosTable();
 	ConvertAmigaTrack(t, LITTLE_RAMP);
 	srand(static_cast<unsigned>(std::time(nullptr)));
 }
 
-void FreeData(SoundState& s, const TrackState& t)
+void FreeData(SoundState& s, TrackState& t)
 {
 	FreeTrackData(t);
 	DestroySoundBuffers(s);
@@ -149,21 +310,26 @@ void CreateResources()
 	CreateShadowVertexBuffer();
 	CreateCarVertexBuffer();
 
-	// Load road textures from resources
-	static std::wstring_view roadTexNames[] = {
-		L"RoadYellowDark", L"RoadYellowLight",
-		L"RoadRedDark", L"RoadRedLight",
-		L"RoadBlack", L"RoadWhite"
+	// Load road textures from embedded resources
+	static std::string_view roadTexNames[] = {
+		"RoadYellowDark.bmp", "RoadYellowLight.bmp",
+		"RoadRedDark.bmp", "RoadRedLight.bmp",
+		"RoadBlack.bmp", "RoadWhite.bmp"
 	};
-	for (const auto name : roadTexNames)
+	g_roadTexture.clear();
+	g_roadTexture.resize(std::size(roadTexNames));
+	for (size_t i = 0; i < std::size(roadTexNames); ++i)
 	{
-		const auto bmp = PlatformLoadBitmapResource(name);
+		const auto data = pf::embedded_resource_data(roadTexNames[i]);
+		const auto bmp = data.empty() ? nullptr : pf::load_bitmap_memory(data.data(), data.size());
 		if (bmp)
-			g_roadTexture.emplace_back(SWTexture{bmp->pixels, bmp->width, bmp->height});
+			g_roadTexture[i] = SWTexture{bmp->pixels, bmp->width, bmp->height};
+		else
+			ShowError(format(L"Failed to load road texture: %hs", roadTexNames[i].data()), L"Warning");
 	}
 
 	// Set projection transform
-	const float fAspect = static_cast<float>(g_renderer.GetWidth()) / static_cast<float>(g_renderer.GetHeight());
+	const double fAspect = static_cast<double>(g_renderer.GetWidth()) / static_cast<double>(g_renderer.GetHeight());
 	const Mat4 matProj = Mat4PerspectiveFovLH(SCR_PI / 4.0f, fAspect, 0.5f, FURTHEST_Z);
 	g_renderer.SetProjectionMatrix(matProj);
 }
@@ -179,24 +345,27 @@ void FreeResources()
 
 static void CalcTrackMenuViewpoint()
 {
-	static int32_t circle_y_angle = 0;
+	static double circle_y_angle = 0.0;
 
-	constexpr int32_t centre = NUM_TRACK_CUBES * CUBE_SIZE / 2;
-	constexpr int32_t radius = (NUM_TRACK_CUBES - 2) * CUBE_SIZE / PRECISION;
+	// Centre and orbit radius in render-space world units.
+	constexpr double centre_r = NUM_TRACK_CUBES * WORLD_CUBE_SIZE / 2.0;
+	constexpr double radius_r = (NUM_TRACK_CUBES - 2) * WORLD_CUBE_SIZE;
 
-	target_x = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	target_x = centre_r;
 	target_y = 0;
-	target_z = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	target_z = centre_r;
 
 	// Orbit camera around the track
 	if (!bPaused) circle_y_angle += 128;
-	circle_y_angle &= MAX_ANGLE - 1;
+	circle_y_angle = WrapAngle(circle_y_angle);
 
-	auto [sin, cos] = GetSinCos(circle_y_angle);
+	const double circle_rad = circle_y_angle * ANGLE_TO_RADIANS;
+	const double sin = std::sin(circle_rad);
+	const double cos = std::cos(circle_rad);
 
-	viewpoint1_x = centre + sin * radius;
-	viewpoint1_y = -CUBE_SIZE * 3;
-	viewpoint1_z = centre + cos * radius;
+	viewpoint1_x = centre_r + sin * radius_r;
+	viewpoint1_y = -3.0 * WORLD_CUBE_SIZE;
+	viewpoint1_z = centre_r + cos * radius_r;
 
 	const auto trackMenuView = LockViewpointToTarget(viewpoint1_x,
 	                                                 viewpoint1_y,
@@ -206,25 +375,26 @@ static void CalcTrackMenuViewpoint()
 	                                                 target_z);
 	viewpoint1_x_angle = trackMenuView.x_angle;
 	viewpoint1_y_angle = trackMenuView.y_angle;
-	viewpoint1_z_angle = 0;
+	viewpoint1_z_angle = 0.0f;
 }
 
 static void CalcTrackPreviewViewpoint(const TrackState& t)
 {
+	// opponent_x/y/z are render-space already.
 	target_x = opponent_x;
 	target_y = opponent_y;
 	target_z = opponent_z;
 
-	constexpr int32_t centre = NUM_TRACK_CUBES * CUBE_SIZE / 2;
+	constexpr double centre_r = NUM_TRACK_CUBES * WORLD_CUBE_SIZE / 2.0;
 
-	viewpoint1_x = centre;
+	viewpoint1_x = centre_r;
 
 	if (t.TrackID == DRAW_BRIDGE)
-		viewpoint1_y = opponent_y - CUBE_SIZE * 5 / 2;
+		viewpoint1_y = target_y - WORLD_CUBE_SIZE * 5.0 / 2.0;
 	else
-		viewpoint1_y = opponent_y - CUBE_SIZE / 2;
+		viewpoint1_y = target_y - WORLD_CUBE_SIZE / 2.0;
 
-	viewpoint1_z = centre;
+	viewpoint1_z = centre_r;
 
 	viewpoint1_x += (target_x - viewpoint1_x) / 2;
 	viewpoint1_z += (target_z - viewpoint1_z) / 2;
@@ -237,56 +407,108 @@ static void CalcTrackPreviewViewpoint(const TrackState& t)
 	                                               target_z);
 	viewpoint1_x_angle = previewView.x_angle;
 	viewpoint1_y_angle = previewView.y_angle;
-	viewpoint1_z_angle = 0;
+	viewpoint1_z_angle = 0.0f;
 }
 
 static void CalcGameViewpoint()
 {
 	if (bOutsideView)
 	{
-		const auto rot = CalcYXZTrigCoefficients(player1_x_angle,
+		// Trailing camera: keep the camera level so the horizon remains stable.
+		const auto rot = CalcYXZTrigCoefficients(0,
 		                                         player1_y_angle,
-		                                         player1_z_angle);
+		                                         0);
 
-		const auto offset = WorldOffset(rot, 0, 0xc0, 0x300);
+		const auto offset = WorldOffset(rot, 0.0, 0xc0, 0x300);
+		// player1_x/y/z and offset are both render-space; subtract directly.
 		viewpoint1_x = player1_x - offset.x;
 		viewpoint1_y = player1_y - offset.y;
 		viewpoint1_z = player1_z - offset.z;
 
-		viewpoint1_x_angle = player1_x_angle;
-		viewpoint1_y_angle = player1_y_angle;
-		viewpoint1_z_angle = player1_z_angle;
+		viewpoint1_x_angle = 0.0f;
+		viewpoint1_y_angle = AngleToRadians(player1_y_angle);
+		viewpoint1_z_angle = 0.0f;
 	}
 	else
 	{
 		viewpoint1_x = player1_x;
-		viewpoint1_y = player1_y - (HEIGHT_ABOVE_ROAD << LOG_PRECISION);
+		viewpoint1_y = player1_y - static_cast<double>(HEIGHT_ABOVE_ROAD);
 		viewpoint1_z = player1_z;
 
-		viewpoint1_x_angle = player1_x_angle;
-		viewpoint1_y_angle = player1_y_angle;
-		viewpoint1_z_angle = player1_z_angle;
+		// Clamp the eye so it can't sink below the road surface near the car.
+		// Road heights live in "internal" Amiga units; the conversion to external
+		// player_y coords (where MORE NEGATIVE == HIGHER in world) is
+		//   external_y = -road_height * 256 * LOCAL_Y_FACTOR  ==  -road_height << 10
+		// (matching the reverse calc in LimitViewpointY). Bigger road_height ==
+		// higher road surface, so to keep the eye above ALL nearby road we clamp
+		// against the MAXIMUM of the three wheel road-height samples (front-left,
+		// front-right, rear). Using min() instead would only protect against the
+		// lower side of a banked turn / the lower end on a hill crest, leaving
+		// the eye free to dive through the higher side.
+		// Skip the clamp when every sample is the off-road sentinel (car is in
+		// the void), otherwise it would shove the eye absurdly high.
+		const double road_heights[] = {
+			g_gameState.front_left_road_height,
+			g_gameState.front_right_road_height,
+			g_gameState.rear_road_height
+		};
+		double road_height = 0;
+		bool road_found = false;
+		for (const double sample : road_heights)
+		{
+			if (sample != GameState::OFF_ROAD_HEIGHT && (!road_found || sample > road_height))
+			{
+				road_height = sample;
+				road_found = true;
+			}
+		}
+		if (road_found)
+		{
+			// road_height is in road_height units (256-per-render-Y). The matching
+			// render-space external y is -road_height / 16.
+			const double road_external_y_render = -road_height / 16.0;
+			const double max_viewpoint_y = road_external_y_render -
+				static_cast<double>(MIN_EYE_ABOVE_ROAD);
+			if (viewpoint1_y > max_viewpoint_y)
+				viewpoint1_y = max_viewpoint_y;
+		}
+
+		viewpoint1_x_angle = AngleToRadians(player1_x_angle);
+		viewpoint1_y_angle = AngleToRadians(player1_y_angle);
+		viewpoint1_z_angle = AngleToRadians(player1_z_angle);
 	}
 }
 
 static Mat4 matWorldTrack, matWorldCar, matWorldOpponentsCar;
+static Mat4 matWorldCarWheels[4];
+static void DrawPlayerCar(SoftwareRenderer& r);
 
 static void SetCarWorldTransform()
 {
+	// Use render angles (road-aligned when grounded) so the car visibly sits
+	// flush with the track in outside view. Yaw still comes from physics.
 	Mat4 matRot = Mat4::Identity();
-	const float xa = static_cast<float>(player1_x_angle) * 2 * SCR_PI / 65536.0f;
-	const float ya = static_cast<float>(player1_y_angle) * 2 * SCR_PI / 65536.0f;
-	const float za = static_cast<float>(player1_z_angle) * 2 * SCR_PI / 65536.0f;
+	const double xa = AngleToRadians(render_x_angle);
+	const double ya = AngleToRadians(player1_y_angle);
+	const double za = AngleToRadians(render_z_angle);
 	Mat4 matTemp = Mat4RotationZ(za);
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationX(xa);
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationY(ya);
 	matRot = Mat4Multiply(matRot, matTemp);
-	const Mat4 matTrans = Mat4Translation(static_cast<float>(player1_x >> LOG_PRECISION),
-	                                      static_cast<float>(-player1_y >> LOG_PRECISION) + VCAR_HEIGHT * 3 / 8,
-	                                      static_cast<float>(player1_z >> LOG_PRECISION));
+	// player1_x/z are render-space units already. The vertical position comes
+	// from render_car_y, which anchors the wheel-contact plane to the road when
+	// grounded (see UpdateRenderAngles) so the car stays flush with the track.
+	const Mat4 matTrans = Mat4Translation(player1_x,
+	                                      render_car_y,
+	                                      player1_z);
 	matWorldCar = Mat4Multiply(matRot, matTrans);
+	for (int wheel = 0; wheel < 4; ++wheel)
+	{
+		const Mat4 suspension = Mat4Translation(0.0, render_wheel_y[wheel], 0.0);
+		matWorldCarWheels[wheel] = Mat4Multiply(suspension, matWorldCar);
+	}
 }
 
 static void SetOpponentsCarWorldTransform()
@@ -298,9 +520,10 @@ static void SetOpponentsCarWorldTransform()
 	matRot = Mat4Multiply(matRot, matTemp);
 	matTemp = Mat4RotationY(opponent_y_angle);
 	matRot = Mat4Multiply(matRot, matTemp);
-	const Mat4 matTrans = Mat4Translation(static_cast<float>(opponent_x >> LOG_PRECISION),
-	                                      static_cast<float>(-opponent_y >> LOG_PRECISION) + VCAR_HEIGHT / 4,
-	                                      static_cast<float>(opponent_z >> LOG_PRECISION));
+	// opponent_x/y/z are render-space units already.
+	const Mat4 matTrans = Mat4Translation(opponent_x,
+	                                      -opponent_y + VCAR_HEIGHT / 4,
+	                                      opponent_z);
 	matWorldOpponentsCar = Mat4Multiply(matRot, matTrans);
 }
 
@@ -309,7 +532,7 @@ static void StopEngineSound()
 	if (g_soundState.engineSoundPlaying)
 	{
 		for (int i = 0; i < 8; i++)
-			PlatformSoundStop(g_soundState.EngineSoundBuffers[i]);
+			SoundStop(g_soundState.EngineSoundBuffers[i]);
 
 		g_soundState.engineSoundPlaying = false;
 	}
@@ -317,7 +540,6 @@ static void StopEngineSound()
 
 void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /*p*/)
 {
-	static int32_t frameCount = 0;
 	const uint32_t input = lastInput; // take copy of user input
 
 	bFrameMoved = false;
@@ -336,25 +558,13 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 	if (t.TrackID == NO_TRACK)
 		return;
 
-	// Track preview and game mode run at reduced frame rate
+	// Track preview and game mode run on the fixed simulation clock.
 	if (g_gameMode == TRACK_PREVIEW || g_gameMode == GAME_IN_PROGRESS)
 	{
 		if (g_gameMode == GAME_IN_PROGRESS)
 		{
-			// Following function should run at 50Hz
+			// Advance engine and wheel state once per fixed simulation tick.
 			if (!bPaused) FramesWheelsEngine(g_soundState, g_soundState.EngineSoundBuffers);
-		}
-
-		if (frameCount > 0)
-			--frameCount;
-
-		if (frameCount == 0)
-		{
-			frameCount = frameGap;
-		}
-		else
-		{
-			return;
 		}
 	}
 	else if (g_gameMode == TRACK_MENU)
@@ -401,6 +611,10 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 		}
 
 		player1_y = LimitViewpointY(g_trackState, g_gameState, player1_y);
+
+		// Smooth render-only orientation toward the road plane so the trailing
+		// camera and visible car body sit flush with the track surface.
+		UpdateRenderAngles();
 	}
 
 	if (g_gameMode == TRACK_MENU || g_gameMode == TRACK_PREVIEW)
@@ -413,32 +627,25 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 			SetOpponentsCarWorldTransform();
 		}
 
-		// Prepare transforms for rendering
-		viewpoint1_x >>= LOG_PRECISION;
-		viewpoint1_z >>= LOG_PRECISION;
-
-		target_x >>= LOG_PRECISION;
+		// viewpoint1_* and target_* are already in render-space world units;
+		// the only post-processing the renderer needs is the y-axis flip
+		// matching the LookAt convention (positive y == up on screen, while
+		// our world stores higher altitudes as more-negative y).
 		target_y = -target_y;
-		target_y >>= LOG_PRECISION;
-		target_z >>= LOG_PRECISION;
 
 		// Set the track's world transform matrix
 		matWorldTrack = Mat4::Identity();
 
 		// Set the view transform matrix using LookAt
 		const Vec3 vUpVec(0.0f, 1.0f, 0.0f);
-		const Vec3 vEyePt(static_cast<float>(viewpoint1_x), static_cast<float>(-viewpoint1_y >> LOG_PRECISION),
-		                  static_cast<float>(viewpoint1_z));
-		const Vec3 vLookatPt(static_cast<float>(target_x), static_cast<float>(target_y), static_cast<float>(target_z));
+		const Vec3 vEyePt(viewpoint1_x, -viewpoint1_y, viewpoint1_z);
+		const Vec3 vLookatPt(target_x, target_y, target_z);
 		const Mat4 matView = Mat4LookAtLH(vEyePt, vLookatPt, vUpVec);
 		g_renderer.SetViewMatrix(matView);
 	}
 	else if (g_gameMode == GAME_IN_PROGRESS)
 	{
 		CalcGameViewpoint();
-
-		viewpoint1_x >>= LOG_PRECISION;
-		viewpoint1_z >>= LOG_PRECISION;
 
 		matWorldTrack = Mat4::Identity();
 
@@ -449,14 +656,14 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 			SetCarWorldTransform();
 		}
 
-		// Build view matrix manually: translate then rotate
-		const Mat4 matTrans = Mat4Translation(static_cast<float>(-viewpoint1_x),
-		                                      static_cast<float>(viewpoint1_y >> LOG_PRECISION),
-		                                      static_cast<float>(-viewpoint1_z));
+		// Build view matrix manually: translate then rotate.
+		const Mat4 matTrans = Mat4Translation(-viewpoint1_x,
+		                                      viewpoint1_y,
+		                                      -viewpoint1_z);
 		Mat4 matRot = Mat4::Identity();
-		const float xa = static_cast<float>(-viewpoint1_x_angle) * 2 * SCR_PI / 65536.0f;
-		const float ya = static_cast<float>(-viewpoint1_y_angle) * 2 * SCR_PI / 65536.0f;
-		const float za = static_cast<float>(-viewpoint1_z_angle) * 2 * SCR_PI / 65536.0f;
+		const double xa = -viewpoint1_x_angle;
+		const double ya = -viewpoint1_y_angle;
+		const double za = -viewpoint1_z_angle;
 		Mat4 matTemp = Mat4RotationY(ya);
 		matRot = Mat4Multiply(matRot, matTemp);
 		matTemp = Mat4RotationX(xa);
@@ -471,17 +678,19 @@ void OnFrameMove(const double /*fTime*/, const TrackState& t, const GameState& /
 		bFrameMoved = true;
 }
 
+// A pause belongs to the race or preview it was taken in. Carried over, the
+// next screen comes up frozen with nothing on it to say why.
 static void StartGame()
 {
 	g_gameState.bNewGame = true;
 	g_gameMode = GAME_IN_PROGRESS;
 	ResetLapData(g_gameState, OPPONENT);
 	ResetLapData(g_gameState, PLAYER);
-	gameStartTime = PlatformGetTime();
+	gameStartTime = pf::platform_get_time();
 	gameEndTime = 0;
 	g_gameState.boostReserve = g_trackState.StandardBoost;
 	g_gameState.boostUnit = 0;
-	bPlayerPaused = bOpponentPaused = false;
+	bPlayerPaused = bOpponentPaused = bPaused = false;
 }
 
 static void SelectTrack()
@@ -489,19 +698,35 @@ static void SelectTrack()
 	g_gameState.bNewGame = true;
 	ResetPlayer(g_gameState);
 	g_gameMode = TRACK_PREVIEW;
-	bPlayerPaused = bOpponentPaused = false;
+	bPlayerPaused = bOpponentPaused = bPaused = false;
 }
 
 
 void RenderText(const double /*fTime*/, const TrackState& track, const GameState& game,
                 const GameModeType GameMode)
 {
+	const int screenW = g_renderer.GetWidth();
 	const int screenH = g_renderer.GetHeight();
 	constexpr uint32_t textColor = XRGB(255, 255, 0);
+	constexpr int textWidth = 8;
+	constexpr int textHeight = 8;
+	constexpr int hudPadding = 8;
+	constexpr int hudRowHeight = 14;
+
+	auto drawTextRightAligned = [&](const int right, const int y, const std::wstring_view text, const uint32_t color)
+	{
+		g_renderer.DrawGameText(right - static_cast<int>(text.size()) * textWidth, y, text, color);
+	};
+
+	auto drawTextCentered = [&](const int y, const std::wstring_view text, const uint32_t color)
+	{
+		const int width = static_cast<int>(text.size()) * textWidth;
+		g_renderer.DrawGameText((screenW - width) / 2, y, text, color);
+	};
 
 	if (bShowStats)
 	{
-		g_renderer.DrawGameText(2, 0, L"Version 1.0", textColor);
+		g_renderer.DrawGameText(hudPadding, 4, L"Version 1.0", textColor);
 	}
 
 	switch (GameMode)
@@ -521,52 +746,76 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 	case GAME_OVER:
 		{
 			wchar_t lapText[3] = L"  ";
+			std::wstring_view title;
+			uint32_t titleColor = textColor;
 
 			// Output opponent's name for four seconds at race start
-			if (PlatformGetTime() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
+			if (pf::platform_get_time() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
 			{
-				const auto op = format(L"Opponent: %s", GetOpponentName(game.opponentsID));
-				g_renderer.DrawTextLargeCentered(10, op, textColor);
+				title = GetOpponentName(game.opponentsID);
 			}
 			if (game.lapNumber[PLAYER] > 0)
 				swprintf_s(lapText, 3, L"%d", game.lapNumber[PLAYER]);
-			g_renderer.DrawGameText(2, screenH - 15 * 2, format(L"Lap: %s   Boost: %d", lapText,
-			                                                    game.boostReserve), textColor);
-			g_renderer.DrawGameText(2, screenH - 15 * 1, format(L"Opponent Distance: %d",
-			                                                    CalculateOpponentsDistance(game)), textColor);
-			g_renderer.DrawGameText(280, screenH - 15 * 2, format(L"Speed: %d", CalculateDisplaySpeed(g_gameState)),
-			                        textColor);
-			g_renderer.DrawGameText(280, screenH - 15 * 1, format(L"Damage: %d", game.new_damage), textColor);
+
+			const bool compactHud = screenW < 480;
+			const auto lapBoost = compactHud
+				? format(L"Lap %s  Boost %d", lapText, game.boostReserve)
+				: format(L"Lap: %s   Boost: %d", lapText, game.boostReserve);
+			const auto opponentDistance = compactHud
+				? format(L"Opp. distance %d", CalculateOpponentsDistance(game))
+				: format(L"Opponent Distance: %d", CalculateOpponentsDistance(game));
+			const auto speed = format(compactHud ? L"Speed %d" : L"Speed: %d", CalculateDisplaySpeed(g_gameState));
+			const auto damage = format(compactHud ? L"Damage %d" : L"Damage: %d", game.new_damage);
+
+			const int hudRows = compactHud ? 4 : 2;
+			const int hudHeight = hudPadding * 2 + hudRows * hudRowHeight - (hudRowHeight - textHeight);
+			const int hudTop = screenH - hudHeight;
+			g_renderer.BlendRect(0, hudTop, screenW - 1, screenH - 1, XRGB(0, 0, 0), 128);
+
+			if (compactHud)
+			{
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding, lapBoost, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight, opponentDistance, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight * 2, speed, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight * 3, damage, textColor);
+			}
+			else
+			{
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding, lapBoost, textColor);
+				drawTextRightAligned(screenW - hudPadding, hudTop + hudPadding, speed, textColor);
+				g_renderer.DrawGameText(hudPadding, hudTop + hudPadding + hudRowHeight, opponentDistance, textColor);
+				drawTextRightAligned(screenW - hudPadding, hudTop + hudPadding + hudRowHeight, damage, textColor);
+			}
+
 			if (game.raceFinished)
 			{
-				const double currentTime = PlatformGetTime();
+				const double currentTime = pf::platform_get_time();
 				if (gameEndTime == 0.0)
 					gameEndTime = currentTime;
 
 				const double diffTime = currentTime - gameEndTime;
 
-				uint32_t bigTextColor;
 				if (GameMode == GAME_OVER)
 				{
-					bigTextColor = XRGB(255, 255, 0);
-					g_renderer.DrawGameText(124, screenH - 25 * 12,
-					                        L"GAME OVER: Use Game menu to return to track menu",
-					                        bigTextColor);
+					title = L"GAME OVER";
+					drawTextCentered(30, screenW >= 360
+						? L"Use Game menu to return to track menu"
+						: L"Use Game menu to return", textColor);
 				}
 				else
 				{
 					const int32_t intTime = static_cast<int32_t>(diffTime);
 					if (diffTime - static_cast<double>(intTime) < 0.5)
-						bigTextColor = XRGB(255, 255, 255);
+						titleColor = XRGB(255, 255, 255);
 					else
-						bigTextColor = XRGB(0, 0, 0);
+						titleColor = XRGB(0, 0, 0);
 
-					if (game.raceWon)
-						g_renderer.DrawGameText(250, screenH - 25 * 12, L"RACE WON", bigTextColor);
-					else
-						g_renderer.DrawGameText(250, screenH - 25 * 12, L"RACE LOST", bigTextColor);
+					title = game.raceWon ? L"RACE WON" : L"RACE LOST";
 				}
 			}
+
+			if (!title.empty())
+				g_renderer.DrawTextLargeCentered(10, title, titleColor);
 		}
 		break;
 	}
@@ -577,19 +826,13 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 {
 	g_renderer.ClearDepth();
 
-	//g_renderer.SetDepthTestEnabled(false);
-	//g_renderer.SetCullMode(SoftwareRenderer::CULL_NONE);
-
 	// Draw Backdrop
 	DrawBackdrop(g_renderer, viewpoint1_y, viewpoint1_x_angle, viewpoint1_y_angle, viewpoint1_z_angle);
-
-	// Enable lighting for 3D geometry
-	g_renderer.SetLightingEnabled(true);
 
 	// Draw Track
 	g_renderer.SetWorldMatrix(matWorldTrack);
 	DrawTrack(t, GameMode, g_renderer, g_gameState.player_current_piece,
-	          g_gameState.player_current_segment, g_roadTexture, !g_gameState.drop_start_done);
+	          g_gameState.player_current_segment, g_roadTexture);
 
 	switch (GameMode)
 	{
@@ -611,14 +854,10 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 		if (bOutsideView)
 		{
 			// Draw Player1's Car
-			g_renderer.SetWorldMatrix(matWorldCar);
-			DrawCar(g_renderer);
+			DrawPlayerCar(g_renderer);
 		}
 		break;
 	}
-
-	// Disable lighting for UI / 2D overlays
-	g_renderer.SetLightingEnabled(false);
 
 	if (GameMode == GAME_IN_PROGRESS)
 	{
@@ -650,7 +889,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 			const int32_t track_number = nChar - '1';
 			if (!ConvertAmigaTrack(g_trackState, track_number))
 			{
-				PlatformShowError(L"Failed to convert track", L"Error");
+				ShowError(L"Failed to convert track", L"Error");
 				return;
 			}
 			CreateTrackVertexBuffer(g_trackState);
@@ -658,7 +897,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 		break;
 
 	// controls for CarBehaviour, Player 1
-	case PlatformKey::Left:
+	case pf::platform_key::Left:
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID - 1;
@@ -670,7 +909,7 @@ void AppHandleKeyDown(const uint32_t nChar)
 			lastInput |= KEY_P1_LEFT;
 		break;
 
-	case PlatformKey::Right:
+	case pf::platform_key::Right:
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID + 1;
@@ -682,13 +921,13 @@ void AppHandleKeyDown(const uint32_t nChar)
 			lastInput |= KEY_P1_RIGHT;
 		break;
 
-	case PlatformKey::Control:
+	case pf::platform_key::Control:
 		ctrlHeld = true;
 		if (lastInput & KEY_P1_ACCEL)
 			lastInput |= KEY_P1_BOOST;
 		break;
 
-	case PlatformKey::Up:
+	case pf::platform_key::Up:
 		if (g_gameMode == TRACK_MENU)
 			NextSceneryType();
 		else
@@ -699,14 +938,14 @@ void AppHandleKeyDown(const uint32_t nChar)
 		}
 		break;
 
-	case PlatformKey::Down:
+	case pf::platform_key::Down:
 		if (g_gameMode == TRACK_MENU)
 			NextSceneryType();
 		else
 			lastInput |= KEY_P1_BRAKE;
 		break;
 
-	case PlatformKey::Space:
+	case pf::platform_key::Space:
 	case 'S':
 	case 's':
 		if (g_gameMode == GAME_IN_PROGRESS)
@@ -723,81 +962,90 @@ void AppHandleKeyUp(const uint32_t nChar)
 {
 	switch (nChar)
 	{
-	case PlatformKey::Left:
+	case pf::platform_key::Left:
 		lastInput &= ~KEY_P1_LEFT;
 		break;
 
-	case PlatformKey::Right:
+	case pf::platform_key::Right:
 		lastInput &= ~KEY_P1_RIGHT;
 		break;
 
-	case PlatformKey::Control:
+	case pf::platform_key::Control:
 		ctrlHeld = false;
 		lastInput &= ~KEY_P1_BOOST;
 		break;
 
-	case PlatformKey::Up:
+	case pf::platform_key::Up:
 		lastInput &= ~(KEY_P1_ACCEL | KEY_P1_BOOST);
 		break;
 
-	case PlatformKey::Down:
+	case pf::platform_key::Down:
 		lastInput &= ~KEY_P1_BRAKE;
 		break;
 	}
 }
 
+void AppResetInput()
+{
+	lastInput = 0;
+	ctrlHeld = false;
+}
+
 // Sound buffer setup — creates all game sound buffers using platform API
+static pf::sound_buffer_ptr LoadSound(const std::string_view name)
+{
+	return pf::create_sound_buffer(pf::embedded_resource_data(name));
+}
+
 bool SetupSoundBuffers(SoundState& s)
 {
-	if ((s.WreckSoundBuffer = PlatformCreateSoundBuffer(L"WRECK")) == nullptr)
+	if ((s.WreckSoundBuffer = LoadSound("Wreck.wav")) == nullptr)
 		return false;
-	PlatformSoundSetPan(s.WreckSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.WreckSoundBuffer, 64);
+	SoundSetPan(s.WreckSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.WreckSoundBuffer, 64);
 
-	if ((s.HitCarSoundBuffer = PlatformCreateSoundBuffer(L"HITCAR")) == nullptr)
+	if ((s.HitCarSoundBuffer = LoadSound("HitCar.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.HitCarSoundBuffer, AMIGA_PAL_HZ / 238);
-	PlatformSoundSetPan(s.HitCarSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.HitCarSoundBuffer, 56);
+	SoundSetFrequency(s.HitCarSoundBuffer, AMIGA_PAL_HZ / 238);
+	SoundSetPan(s.HitCarSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.HitCarSoundBuffer, 56);
 
-	if ((s.GroundedSoundBuffer = PlatformCreateSoundBuffer(L"GROUNDED")) == nullptr)
+	if ((s.GroundedSoundBuffer = LoadSound("Grounded.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.GroundedSoundBuffer, AMIGA_PAL_HZ / 400);
-	PlatformSoundSetPan(s.GroundedSoundBuffer, PAN_RIGHT);
+	SoundSetFrequency(s.GroundedSoundBuffer, AMIGA_PAL_HZ / 400);
+	SoundSetPan(s.GroundedSoundBuffer, PAN_RIGHT);
 
-	if ((s.CreakSoundBuffer = PlatformCreateSoundBuffer(L"CREAK")) == nullptr)
+	if ((s.CreakSoundBuffer = LoadSound("Creak.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.CreakSoundBuffer, AMIGA_PAL_HZ / 238);
-	PlatformSoundSetPan(s.CreakSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.CreakSoundBuffer, 64);
+	SoundSetFrequency(s.CreakSoundBuffer, AMIGA_PAL_HZ / 238);
+	SoundSetPan(s.CreakSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.CreakSoundBuffer, 64);
 
-	if ((s.SmashSoundBuffer = PlatformCreateSoundBuffer(L"SMASH")) == nullptr)
+	if ((s.SmashSoundBuffer = LoadSound("Smash.wav")) == nullptr)
 		return false;
-	PlatformSoundSetFrequency(s.SmashSoundBuffer, AMIGA_PAL_HZ / 280);
-	PlatformSoundSetPan(s.SmashSoundBuffer, PAN_LEFT);
-	PlatformSoundSetVolume(s.SmashSoundBuffer, 64);
+	SoundSetFrequency(s.SmashSoundBuffer, AMIGA_PAL_HZ / 280);
+	SoundSetPan(s.SmashSoundBuffer, PAN_LEFT);
+	SoundSetVolume(s.SmashSoundBuffer, 64);
 
-	if ((s.OffRoadSoundBuffer = PlatformCreateSoundBuffer(L"OFFROAD")) == nullptr)
+	if ((s.OffRoadSoundBuffer = LoadSound("OffRoad.wav")) == nullptr)
 		return false;
-	PlatformSoundSetPan(s.OffRoadSoundBuffer, PAN_RIGHT);
-	PlatformSoundSetVolume(s.OffRoadSoundBuffer, 64);
+	SoundSetPan(s.OffRoadSoundBuffer, PAN_RIGHT);
+	SoundSetVolume(s.OffRoadSoundBuffer, 64);
 
-	if ((s.EngineSoundBuffers[0] = PlatformCreateSoundBuffer(L"TICKOVER")) == nullptr)
-		return false;
-	static const wchar_t* engineNames[] = {
-		nullptr, L"ENGINEPITCH2", L"ENGINEPITCH3", L"ENGINEPITCH4",
-		L"ENGINEPITCH5", L"ENGINEPITCH6", L"ENGINEPITCH7", L"ENGINEPITCH8"
+	static const char* engineNames[] = {
+		"TickOver.wav", "EnginePitch2.wav", "EnginePitch3.wav", "EnginePitch4.wav",
+		"EnginePitch5.wav", "EnginePitch6.wav", "EnginePitch7.wav", "EnginePitch8.wav"
 	};
-	for (int i = 1; i < 8; i++)
+	for (int i = 0; i < 8; i++)
 	{
-		if ((s.EngineSoundBuffers[i] = PlatformCreateSoundBuffer(engineNames[i])) == nullptr)
+		if ((s.EngineSoundBuffers[i] = LoadSound(engineNames[i])) == nullptr)
 			return false;
 	}
 
 	for (int i = 0; i < 8; i++)
 	{
-		PlatformSoundSetPan(s.EngineSoundBuffers[i], PAN_LEFT);
-		PlatformSoundSetVolume(s.EngineSoundBuffers[i], 48 / 2);
+		SoundSetPan(s.EngineSoundBuffers[i], PAN_LEFT);
+		SoundSetVolume(s.EngineSoundBuffers[i], 48 / 2);
 	}
 
 	return true;
@@ -805,24 +1053,20 @@ bool SetupSoundBuffers(SoundState& s)
 
 void DestroySoundBuffers(SoundState& s)
 {
-	// Release all sound buffers by stopping them - DirectSound
-	// resources are freed when PlatformSoundShutdown releases the device
-
-	PlatformDeleteSoundBuffer(s.WreckSoundBuffer);
-	PlatformDeleteSoundBuffer(s.HitCarSoundBuffer);
-	PlatformDeleteSoundBuffer(s.GroundedSoundBuffer);
-	PlatformDeleteSoundBuffer(s.CreakSoundBuffer);
-	PlatformDeleteSoundBuffer(s.SmashSoundBuffer);
-	PlatformDeleteSoundBuffer(s.OffRoadSoundBuffer);
+	s.WreckSoundBuffer.reset();
+	s.HitCarSoundBuffer.reset();
+	s.GroundedSoundBuffer.reset();
+	s.CreakSoundBuffer.reset();
+	s.SmashSoundBuffer.reset();
+	s.OffRoadSoundBuffer.reset();
 	for (int i = 0; i < 8; i++)
-		PlatformDeleteSoundBuffer(s.EngineSoundBuffers[i]);
+		s.EngineSoundBuffers[i].reset();
 }
 
-void AppInit()
+// Built apart from AppInit so the self-tests can check it without a window.
+std::vector<pf::menu_command> BuildGameMenu()
 {
-	// Build menu definition and create menus
-
-	auto sep = [] { return MenuCommand{}; };
+	auto sep = [] { return pf::menu_command{}; };
 
 	auto isMenu = [] { return g_gameMode == TRACK_MENU; };
 	auto isPreview = [] { return g_gameMode == TRACK_PREVIEW; };
@@ -831,37 +1075,25 @@ void AppInit()
 	auto hasTrack = [] { return g_trackState.TrackID != NO_TRACK; };
 
 	// --- Game menu ---
-	MenuCommand gameMenu;
-	gameMenu.text = L"&Game";
+	// Start Race keeps a written hint and no accelerator: S is read by
+	// AppHandleKeyDown, and in a race it toggles the camera, which an
+	// accelerator would swallow. The platform appends every bound key itself.
+	pf::menu_command gameMenu;
+	gameMenu.text = "&Game";
 	gameMenu.children = {
 		{
-			L"&Start Race\tS", IDM_START_RACE,
+			"&Start Race\tS", IDM_START_RACE,
 			[]
 			{
 				if (g_gameMode == TRACK_MENU && g_trackState.TrackID != NO_TRACK)
-				{
-					g_gameState.bNewGame = true;
-					ResetPlayer(g_gameState);
-					g_gameMode = TRACK_PREVIEW;
-					bPlayerPaused = bOpponentPaused = false;
-				}
+					SelectTrack();
 				else if (g_gameMode == TRACK_PREVIEW)
-				{
-					g_gameState.bNewGame = true;
-					g_gameMode = GAME_IN_PROGRESS;
-					ResetLapData(g_gameState, OPPONENT);
-					ResetLapData(g_gameState, PLAYER);
-					gameStartTime = PlatformGetTime();
-					gameEndTime = 0;
-					g_gameState.boostReserve = g_trackState.StandardBoost;
-					g_gameState.boostUnit = 0;
-					bPlayerPaused = bOpponentPaused = false;
-				}
+					StartGame();
 			},
 			[=] { return (isMenu() && hasTrack()) || isPreview(); }
 		},
 		{
-			L"Back to &Menu\tEsc", IDM_BACK_TO_MENU,
+			"Back to &Menu", IDM_BACK_TO_MENU,
 			[]
 			{
 				if (g_gameMode != TRACK_MENU)
@@ -869,58 +1101,66 @@ void AppInit()
 					g_gameMode = TRACK_MENU;
 					g_gameState.opponentsID = NO_OPPONENT;
 					ResetDrawBridge(g_trackState, g_gameState);
+					bPaused = false;
 				}
 			},
-			[=] { return !isMenu(); }
+			[=] { return !isMenu(); },
+			nullptr,
+			pf::key_binding{pf::platform_key::Escape}
 		},
 		sep(),
 		{
-			L"&Pause\tP", IDM_PAUSE,
+			"&Pause", IDM_PAUSE,
 			[] { bPaused = true; },
-			[=] { return (isGame() || isPreview()) && !bPaused; }
+			[=] { return (isGame() || isPreview()) && !bPaused; },
+			nullptr,
+			pf::key_binding{'P'}
 		},
 		{
-			L"R&esume\tO", IDM_RESUME,
+			"R&esume", IDM_RESUME,
 			[] { bPaused = false; },
-			[] { return bPaused; }
+			[] { return bPaused; },
+			nullptr,
+			pf::key_binding{'O'}
 		},
 		sep(),
 		{
-			L"&Reverse Car\tR", IDM_REVERSE_CAR,
+			"&Reverse Car", IDM_REVERSE_CAR,
 			[]
 			{
 				if (g_gameMode == GAME_IN_PROGRESS)
 				{
-					player1_y_angle += _180_DEGREES;
-					player1_y_angle &= MAX_ANGLE - 1;
+					player1_y_angle = WrapAngle(player1_y_angle + _180_DEGREES);
 					g_gameState.INITIALISE_PLAYER = true;
 				}
 			},
-			[=] { return isGame(); }
+			[=] { return isGame(); },
+			nullptr,
+			pf::key_binding{'R'}
 		},
 		sep(),
 		{
-			L"E&xit", IDM_EXIT,
-			[] { PlatformClose(); }
+			"E&xit", IDM_EXIT,
+			[] { GameClose(); }
 		},
 	};
 
 	// --- Track menu ---
-	MenuCommand trackMenu;
-	trackMenu.text = L"&Track";
+	pf::menu_command trackMenu;
+	trackMenu.text = "&Track";
 	for (int i = 0; i < NUM_TRACKS; i++)
 	{
 		int trackIdx = i;
 		trackMenu.children.push_back(
 			{
-				GetTrackName(i), IDM_TRACK_FIRST + i,
+				pf::utf16_to_utf8(GetTrackName(i)), IDM_TRACK_FIRST + i,
 				[trackIdx]
 				{
 					if (g_gameMode == TRACK_MENU)
 					{
 						if (!ConvertAmigaTrack(g_trackState, trackIdx))
 						{
-							PlatformShowError(L"Failed to convert track", L"Error");
+							ShowError(L"Failed to convert track", L"Error");
 							return;
 						}
 						CreateTrackVertexBuffer(g_trackState);
@@ -933,32 +1173,33 @@ void AppInit()
 	}
 
 	// --- View menu ---
-	MenuCommand viewMenu;
-	viewMenu.text = L"&View";
+	pf::menu_command viewMenu;
+	viewMenu.text = "&View";
 	viewMenu.children = {
 		{
-			L"&Outside Camera", IDM_OUTSIDE_VIEW,
+			"&Outside Camera", IDM_OUTSIDE_VIEW,
 			[] { bOutsideView = !bOutsideView; },
 			[=] { return isGame(); },
 			[] { return bOutsideView; }
 		},
 		{
-			L"Show S&tats\tF5", IDM_SHOW_STATS,
+			"Show S&tats", IDM_SHOW_STATS,
 			[] { bShowStats = !bShowStats; },
 			nullptr,
-			[] { return bShowStats; }
+			[] { return bShowStats; },
+			pf::key_binding{pf::platform_key::F5}
 		},
 		sep(),
 	};
-	static std::wstring_view sceneryNames[] = {
-		L"Scenery &1"sv, L"Scenery &2"sv, L"Scenery &3"sv, L"Scenery &4"sv, L"Scenery &5"sv
+	static std::string_view sceneryNames[] = {
+		"Scenery &1"sv, "Scenery &2"sv, "Scenery &3"sv, "Scenery &4"sv, "Scenery &5"sv
 	};
 	for (int i = 0; i < 5; i++)
 	{
 		int idx = i;
 		viewMenu.children.push_back(
 			{
-				std::wstring(sceneryNames[i]), IDM_SCENERY_FIRST + i,
+				std::string(sceneryNames[i]), IDM_SCENERY_FIRST + i,
 				[idx] { SetSceneryType(idx); },
 				nullptr,
 				[idx] { return GetSceneryType() == idx; }
@@ -967,45 +1208,67 @@ void AppInit()
 	}
 
 	// --- Speed menu ---
-	MenuCommand speedMenu;
-	speedMenu.text = L"S&peed";
+	pf::menu_command speedMenu;
+	speedMenu.text = "S&peed";
 	speedMenu.children = {
 		{
-			L"&Increase Speed\tF9", IDM_SPEED_INCREASE,
+			"&Increase Speed", IDM_SPEED_INCREASE,
 			[] { if (frameGap > 1) frameGap--; },
-			[] { return frameGap > 1; }
+			[] { return frameGap > 1; },
+			nullptr,
+			pf::key_binding{pf::platform_key::F9}
 		},
 		{
-			L"&Decrease Speed\tF10", IDM_SPEED_DECREASE,
-			[] { frameGap++; }
+			"&Decrease Speed", IDM_SPEED_DECREASE,
+			[] { frameGap++; },
+			nullptr,
+			nullptr,
+			pf::key_binding{pf::platform_key::F10}
 		},
 	};
 
 	// --- Debug menu ---
-	MenuCommand debugMenu;
-	debugMenu.text = L"&Debug";
+	pf::menu_command debugMenu;
+	debugMenu.text = "&Debug";
 	debugMenu.children = {
 		{
-			L"Pause &Player\tF6", IDM_PAUSE_PLAYER,
+			"Pause &Player", IDM_PAUSE_PLAYER,
 			[] { bPlayerPaused = !bPlayerPaused; },
 			nullptr,
-			[] { return bPlayerPaused; }
+			[] { return bPlayerPaused; },
+			pf::key_binding{pf::platform_key::F6}
 		},
 		{
-			L"Pause &Opponent\tF7", IDM_PAUSE_OPPONENT,
+			"Pause &Opponent", IDM_PAUSE_OPPONENT,
 			[] { bOpponentPaused = !bOpponentPaused; },
 			nullptr,
-			[] { return bOpponentPaused; }
+			[] { return bOpponentPaused; },
+			pf::key_binding{pf::platform_key::F7}
 		},
 		sep(),
 		{
-			L"&Restart Race\tZ", IDM_RESTART_RACE,
-			[] { g_gameState.bNewGame = true; },
-			[=] { return isGame() || isOver(); }
+			// A restart is a new race on the same track: lap count, boost and the
+			// finish banner go back to their starting values along with the cars.
+			"&Restart Race", IDM_RESTART_RACE,
+			[] { StartGame(); },
+			[=] { return isGame() || isOver(); },
+			nullptr,
+			pf::key_binding{'Z'}
 		},
 	};
 
-	PlatformSetMenu({gameMenu, trackMenu, viewMenu, speedMenu, debugMenu});
+	return {gameMenu, trackMenu, viewMenu, speedMenu, debugMenu};
+}
+
+bool AppInit()
+{
+	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
+	{
+		ShowError(L"Failed to initialize renderer", L"Error");
+		return false;
+	}
+
+	GameSetMenu(BuildGameMenu());
 
 	// Perform application initialization
 	InitialiseData(g_trackState);
@@ -1013,56 +1276,72 @@ void AppInit()
 	// Create rendering resources
 	CreateResources();
 
-	// Initialise sound objects
-	if (!PlatformSoundInit())
-	{
-		PlatformShowError(L"Failed to initialize DirectSound", L"Warning");
-		// Continue without sound
-	}
-	else
-	{
-		if (!SetupSoundBuffers(g_soundState))
-		{
-			PlatformShowError(L"Failed to set up sound buffers", L"Warning");
-		}
-	}
+	// Without a usable audio device the game runs silent and its title says so.
+	// A modal warning here stopped start-up before the window existed; on a
+	// machine with no sound, such as a CI runner, the box was all there was.
+	g_soundAvailable = pf::sound_init() && SetupSoundBuffers(g_soundState);
+	return true;
+}
+
+// The race stands still while the window is minimised, so the engine must
+// too: it is a looping sound, and only OnFrameMove would otherwise stop it.
+void AppIdleMinimized()
+{
+	StopEngineSound();
+	AppResetInput();
 }
 
 void AppRun()
 {
-	// Create software renderer
-	if (!g_renderer.Init(WINDOW_WIDTH, WINDOW_HEIGHT))
-	{
-		PlatformShowError(L"Failed to initialize renderer", L"Error");
-		return;
-	}
+	double previousTime = pf::platform_get_time();
+	double simulationAccumulator = 0.0;
 
-	while (PlatformEvents())
+	while (pf::platform_events())
 	{
-		const double fTime = PlatformGetTime();
+		if (GameIsMinimized())
+		{
+			AppIdleMinimized();
+			pf::platform_sleep(50);
+			continue;
+		}
+		const double fTime = pf::platform_get_time();
+		const double elapsed = std::clamp(fTime - previousTime, 0.0, 0.25);
+		previousTime = fTime;
+		simulationAccumulator += elapsed;
+		const double simulationStep = SIMULATION_STEP_SECONDS *
+			(static_cast<double>(frameGap + 1) / (DEFAULT_FRAME_GAP + 1));
 
-		// Update game logic
-		OnFrameMove(fTime, g_trackState, g_gameState);
+		int simulationSteps = 0;
+		while (simulationAccumulator >= simulationStep && simulationSteps < 5)
+		{
+			OnFrameMove(fTime, g_trackState, g_gameState);
+			simulationAccumulator -= simulationStep;
+			++simulationSteps;
+		}
+		if (simulationSteps == 5)
+			simulationAccumulator = std::min(simulationAccumulator, simulationStep);
 
 		// Render frame
 		OnFrameRender(g_trackState, g_gameMode, fTime);
 
 		// Draw FPS in top-right corner
-		g_renderer.DrawGameText(g_renderer.GetWidth() - 90, 2, format(L"FPS: %.1f", g_fps), XRGB(255, 255, 0));
+		const auto fpsText = format(L"FPS: %.1f", g_fps);
+		g_renderer.DrawGameText(g_renderer.GetWidth() - 8 - static_cast<int>(fpsText.size()) * 8, 4,
+		                        fpsText, XRGB(255, 255, 0));
 
-		PlatformPresentFrame(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
+		GamePresent(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
 
 		// FPS tracking
 		g_fpsFrameCount++;
 		if (fTime - g_fpsTime >= 1.0)
 		{
-			g_fps = static_cast<float>(g_fpsFrameCount) / static_cast<float>(fTime - g_fpsTime);
+			g_fps = static_cast<double>(g_fpsFrameCount) / (fTime - g_fpsTime);
 			g_fpsFrameCount = 0;
 			g_fpsTime = fTime;
 		}
 
 		// Simple frame rate limiter (~60 fps)
-		PlatformSleep(1);
+		pf::platform_sleep(1);
 	}
 
 	// Cleanup
@@ -1072,206 +1351,118 @@ void AppRun()
 
 void AppHandleFrameSize(const int cx, const int cy)
 {
-	constexpr float targetAspect = static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT);
-	int renderW, renderH;
-	if (static_cast<float>(cx) / static_cast<float>(cy) > targetAspect)
-	{
-		renderH = cy;
-		renderW = static_cast<int>(cy * targetAspect);
-	}
+	// Fill the entire client area — never letterbox. Adjust the projection so we
+	// always reveal *more* world than the original 4:3 view, never crop:
+	//   - Wider than 4:3  → keep the reference vertical FOV; horizontal FOV grows.
+	//   - Taller than 4:3 → keep the reference horizontal FOV; vertical FOV grows.
+	const int renderW = std::max(cx, 64);
+	const int renderH = std::max(cy, 64);
+	constexpr double refAspect = static_cast<double>(WINDOW_WIDTH) / static_cast<double>(WINDOW_HEIGHT);
+	constexpr double refFovY = SCR_PI / 4.0;
+
+	const double aspect = std::clamp(static_cast<double>(renderW) / static_cast<double>(renderH), 0.5, 3.0);
+	double fovY;
+	if (aspect >= refAspect)
+		fovY = refFovY;
 	else
-	{
-		renderW = cx;
-		renderH = static_cast<int>(cx / targetAspect);
-	}
-	if (renderW > 0 && renderH > 0)
-	{
-		g_renderer.Resize(renderW, renderH);
-		const float fAspect = static_cast<float>(renderW) / static_cast<float>(renderH);
-		const Mat4 matProj = Mat4PerspectiveFovLH(SCR_PI / 4.0f, fAspect, 0.5f, FURTHEST_Z);
-		g_renderer.SetProjectionMatrix(matProj);
-	}
+		fovY = 2.0 * atan(tan(refFovY * 0.5) * refAspect / aspect);
+
+	g_renderer.Resize(renderW, renderH);
+	g_renderer.SetProjectionMatrix(Mat4PerspectiveFovLH(fovY, aspect, 0.5f, FURTHEST_Z));
 }
 
-static constexpr int32_t SIN_COS_TABLE_SIZE = MAX_ANGLE + MAX_ANGLE / 4; // sine/cosine overlap
-
-static int16_t Sin_Cos[SIN_COS_TABLE_SIZE];
-
-static int32_t LockAngle(int32_t opposite,
-                         int32_t adjacent,
-                         int32_t clockwise);
+static double LockAngleRad(double opposite,
+                           double adjacent,
+                           bool clockwise);
 
 
-void CreateSinCosTable()
+// Calculate rotation coefficients for Y, X, Z rotation order.
+// Uses anti-clockwise rotation convention.
+RotationMatrix CalcYXZTrigCoefficients(const double x_angle,
+                                       const double y_angle,
+                                       const double z_angle)
 {
-	double angle = 0;
-	constexpr double step = static_cast<double>(2) * PI / static_cast<double>(MAX_ANGLE);
-	for (int32_t i = 0; i < SIN_COS_TABLE_SIZE; i++)
-	{
-		double value = sin(angle);
-		value = value * static_cast<double>(PRECISION);
-
-		Sin_Cos[i] = static_cast<int16_t>(value);
-		angle += step;
-	}
-}
-
-
-SinCos GetSinCos(const int32_t angle)
-{
-	return {Sin_Cos[angle], Sin_Cos[angle + MAX_ANGLE / 4]};
-}
-
-
-// Calculate rotation coefficients for Y, X, Z rotation order
-// Uses anti-clockwise rotation convention
-RotationMatrix CalcYXZTrigCoefficients(const int32_t x_angle,
-                                       const int32_t y_angle,
-                                       const int32_t z_angle)
-{
-	const int16_t sin_x = Sin_Cos[x_angle];
-	const int16_t sin_y = Sin_Cos[y_angle];
-	const int16_t sin_z = Sin_Cos[z_angle];
-
-	const int16_t cos_x = Sin_Cos[x_angle + MAX_ANGLE / 4];
-	const int16_t cos_y = Sin_Cos[y_angle + MAX_ANGLE / 4];
-	const int16_t cos_z = Sin_Cos[z_angle + MAX_ANGLE / 4];
+	const double rx = x_angle * ANGLE_TO_RADIANS;
+	const double ry = y_angle * ANGLE_TO_RADIANS;
+	const double rz = z_angle * ANGLE_TO_RADIANS;
+	const double sin_x = std::sin(rx);
+	const double cos_x = std::cos(rx);
+	const double sin_y = std::sin(ry);
+	const double cos_y = std::cos(ry);
+	const double sin_z = std::sin(rz);
+	const double cos_z = std::cos(rz);
 
 	RotationMatrix rot;
 
 	// Rotated x coefficients
-	rot.coeffs[X_X_COMP] = static_cast<int16_t>((cos_y * cos_z + sin_x * sin_y / PRECISION * sin_z) /
-		PRECISION);
-	rot.coeffs[X_Y_COMP] = static_cast<int16_t>(-(cos_x * sin_z) / PRECISION);
-	rot.coeffs[X_Z_COMP] = static_cast<int16_t>((-(sin_y * cos_z) + sin_x * cos_y / PRECISION * sin_z) /
-		PRECISION);
+	rot.coeffs[X_X_COMP] = cos_y * cos_z + sin_x * sin_y * sin_z;
+	rot.coeffs[X_Y_COMP] = -(cos_x * sin_z);
+	rot.coeffs[X_Z_COMP] = -(sin_y * cos_z) + sin_x * cos_y * sin_z;
 
 	// Rotated y coefficients
-	rot.coeffs[Y_X_COMP] = static_cast<int16_t>((cos_y * sin_z - sin_x * sin_y / PRECISION * cos_z) /
-		PRECISION);
-	rot.coeffs[Y_Y_COMP] = static_cast<int16_t>(cos_x * cos_z / PRECISION);
-	rot.coeffs[Y_Z_COMP] = static_cast<int16_t>((-(sin_y * sin_z) - sin_x * cos_y / PRECISION * cos_z) /
-		PRECISION);
+	rot.coeffs[Y_X_COMP] = cos_y * sin_z - sin_x * sin_y * cos_z;
+	rot.coeffs[Y_Y_COMP] = cos_x * cos_z;
+	rot.coeffs[Y_Z_COMP] = -(sin_y * sin_z) - sin_x * cos_y * cos_z;
 
 	// Rotated z coefficients
-	rot.coeffs[Z_X_COMP] = static_cast<int16_t>(cos_x * sin_y / PRECISION);
+	rot.coeffs[Z_X_COMP] = cos_x * sin_y;
 	rot.coeffs[Z_Y_COMP] = sin_x;
-	rot.coeffs[Z_Z_COMP] = static_cast<int16_t>(cos_x * cos_y / PRECISION);
+	rot.coeffs[Z_Z_COMP] = cos_x * cos_y;
 
 	return rot;
 }
 
 
-// Transform local-space vector to world-space using rotation coefficients
-COORD_3D WorldOffset(const RotationMatrix& rot,
-                     const int32_t x,
-                     const int32_t y,
-                     const int32_t z)
+// Transform local-space vector to world-space using rotation coefficients.
+// Returns render-space world units (matching the viewpoint pipeline).
+WorldVec3 WorldOffset(const RotationMatrix& rot,
+                      const double x,
+                      const double y,
+                      const double z)
 {
-	COORD_3D result;
+	WorldVec3 result;
 
-	result.x = x * static_cast<int32_t>(rot[X_X_COMP]) +
-		y * static_cast<int32_t>(rot[Y_X_COMP]) +
-		z * static_cast<int32_t>(rot[Z_X_COMP]);
-
-	result.y = x * static_cast<int32_t>(rot[X_Y_COMP]) +
-		y * static_cast<int32_t>(rot[Y_Y_COMP]) +
-		z * static_cast<int32_t>(rot[Z_Y_COMP]);
-
-	result.z = x * static_cast<int32_t>(rot[X_Z_COMP]) +
-		y * static_cast<int32_t>(rot[Y_Z_COMP]) +
-		z * static_cast<int32_t>(rot[Z_Z_COMP]);
+	result.x = x * rot[X_X_COMP] + y * rot[Y_X_COMP] + z * rot[Z_X_COMP];
+	result.y = x * rot[X_Y_COMP] + y * rot[Y_Y_COMP] + z * rot[Z_Y_COMP];
+	result.z = x * rot[X_Z_COMP] + y * rot[Y_Z_COMP] + z * rot[Z_Z_COMP];
 
 	return result;
 }
 
 
-// Calculate x/y angles to point viewpoint toward target
-ViewAngle LockViewpointToTarget(const int32_t viewpoint_x,
-                                const int32_t viewpoint_y,
-                                const int32_t viewpoint_z,
-                                const int32_t target_x,
-                                const int32_t target_y,
-                                const int32_t target_z)
+// Calculate x/y angles to point viewpoint toward target. Returns double radians.
+ViewAngle LockViewpointToTarget(const double viewpoint_x,
+                                const double viewpoint_y,
+                                const double viewpoint_z,
+                                const double tgt_x,
+                                const double tgt_y,
+                                const double tgt_z)
 {
 	ViewAngle result;
 
-	// y angle
-	int32_t opp = target_x - viewpoint_x;
-	int32_t adj = target_z - viewpoint_z;
-	result.y_angle = LockAngle(opp, adj, false);
+	// y angle: yaw between viewpoint and target in the XZ plane.
+	const double dx = tgt_x - viewpoint_x;
+	const double dz = tgt_z - viewpoint_z;
+	result.y_angle = LockAngleRad(dx, dz, false);
 
-	// x angle
-	const double a = (target_x - viewpoint_x) >> LOG_PRECISION;
-	const double b = (target_z - viewpoint_z) >> LOG_PRECISION;
-	const double h = sqrt(a * a + b * b);
-	adj = static_cast<int32_t>(h * PRECISION);
-	opp = target_y - viewpoint_y;
-	result.x_angle = LockAngle(opp, adj, false);
+	// x angle: pitch using horizontal distance as the adjacent. atan2 is
+	// scale-invariant, so we don't need to apply any unit normalisation.
+	const double horiz = sqrt(dx * dx + dz * dz);
+	const double dy = tgt_y - viewpoint_y;
+	result.x_angle = LockAngleRad(dy, horiz, false);
 
 	return result;
 }
 
 
-static int32_t LockAngle(const int32_t opposite,
-                         const int32_t adjacent,
-                         const int32_t clockwise)
+static double LockAngleRad(const double opposite,
+                           const double adjacent,
+                           const bool clockwise)
 {
-	int32_t viewpoint_angle;
-	double radians;
-
-	const double o = opposite;
-	const double a = adjacent;
-
-	// use inverse tan to calculate basic angle in radians
-	if (a == 0) // prevent division by zero
-		radians = PI / static_cast<double>(2); // 90 degrees
-	else
-		radians = atan(o / a); // inverse tan
-
-	// convert radians to internal angle (also round up)
-	const double angle = radians * static_cast<double>(MAX_ANGLE) / (static_cast<double>(2) * PI);
-	// convert to absolute and round up as follows (because abs() isn't for doubles)
-	if (angle > 0)
-		viewpoint_angle = static_cast<int32_t>(angle + 0.5);
-	else
-		viewpoint_angle = static_cast<int32_t>(0.5 - angle);
-
-	// convert angle from first quadrant to full range
-	if (o >= 0)
-	{
-		if (a >= 0)
-		{
-			// first quadrant
-			viewpoint_angle = static_cast<int32_t>(angle);
-		}
-		else
-		{
-			// second quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _180_DEGREES;
-		}
-	}
-	else
-	{
-		if (a <= 0)
-		{
-			// third quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _180_DEGREES;
-		}
-		else
-		{
-			// fourth quadrant
-			viewpoint_angle = static_cast<int32_t>(angle) + _360_DEGREES;
-		}
-	}
-
-	// default is anti-clockwise, so convert to clockwise if necessary
-	if (clockwise)
-	{
-		viewpoint_angle = -viewpoint_angle & MAX_ANGLE - 1;
-	}
-
-	return viewpoint_angle;
+	// atan2 handles all four quadrants and (0,0) (returns 0).
+	double radians = std::atan2(opposite, adjacent);
+	if (clockwise) radians = -radians;
+	return radians;
 }
 
 
@@ -1286,13 +1477,13 @@ static void StoreCarTriangle(const COORD_3D* c1, const COORD_3D* c2, const COORD
 {
 	if (numCarVertices + 3 > MAX_VERTICES_PER_CAR)
 	{
-		PlatformShowError(L"Exceeded numCarVertices", L"StoreCarTriangle");
+		ShowError(L"Exceeded numCarVertices", L"StoreCarTriangle");
 		return;
 	}
 
-	const Vec3 v1(static_cast<float>(c1->x), static_cast<float>(c1->y), static_cast<float>(c1->z));
-	const Vec3 v2(static_cast<float>(c2->x), static_cast<float>(c2->y), static_cast<float>(c2->z));
-	const Vec3 v3(static_cast<float>(c3->x), static_cast<float>(c3->y), static_cast<float>(c3->z));
+	const Vec3 v1(c1->x, c1->y, c1->z);
+	const Vec3 v2(c2->x, c2->y, c2->z);
+	const Vec3 v3(c3->x, c3->y, c3->z);
 
 	pVertices[numCarVertices].pos = v1;
 	pVertices[numCarVertices].color = colour;
@@ -1311,6 +1502,65 @@ static void StoreCarTriangle(const COORD_3D* c1, const COORD_3D* c2, const COORD
 	pVertices[numCarVertices].tu = 0;
 	pVertices[numCarVertices].tv = 0;
 	++numCarVertices;
+}
+
+static void StoreCarQuad(const COORD_3D& c0, const COORD_3D& c1, const COORD_3D& c2, const COORD_3D& c3,
+						 SWVertex* pVertices, const uint32_t colour)
+{
+	StoreCarTriangle(&c0, &c1, &c2, pVertices, colour);
+	StoreCarTriangle(&c0, &c2, &c3, pVertices, colour);
+}
+
+static void StoreWheel(const double x0, const double x1, const double z,
+					   SWVertex* pVertices, const bool hubAtX0)
+{
+	constexpr int sides = 6;
+	constexpr double centreY = -VCAR_HEIGHT / 8.0;
+	constexpr double sqrtThree = 1.7320508075688772;
+	constexpr double verticalRadius = VCAR_HEIGHT / (4.0 * sqrtThree);
+	constexpr double longitudinalRadius = 24.0;
+	const uint32_t tire = SCRGB(SCR_BASE_COLOUR + 0);
+	COORD_3D inner[sides];
+	COORD_3D outer[sides];
+	for (int side = 0; side < sides; ++side)
+	{
+		const double angle = side * 2.0 * PI / sides;
+		const double y = centreY + std::sin(angle) * verticalRadius;
+		const double wheelZ = z + std::cos(angle) * longitudinalRadius;
+		inner[side] = {x0, y, wheelZ};
+		outer[side] = {x1, y, wheelZ};
+	}
+	for (int side = 0; side < sides; ++side)
+	{
+		const int next = (side + 1) % sides;
+		StoreCarQuad(inner[side], inner[next], outer[next], outer[side], pVertices, tire);
+	}
+	for (int side = 1; side < sides - 1; ++side)
+	{
+		StoreCarTriangle(&inner[0], &inner[side + 1], &inner[side], pVertices, tire);
+		StoreCarTriangle(&outer[0], &outer[side], &outer[side + 1], pVertices, tire);
+	}
+
+	// A smaller hex on the outward face reads as a hub at low resolution.
+	const double hubX = hubAtX0 ? x0 - 0.5 : x1 + 0.5;
+	const uint32_t hub = SCRGB(SCR_BASE_COLOUR + 7);
+	COORD_3D hubVertices[sides];
+	for (int side = 0; side < sides; ++side)
+	{
+		const double angle = side * 2.0 * PI / sides;
+		hubVertices[side] = {
+			hubX,
+			centreY + std::sin(angle) * verticalRadius * 0.48,
+			z + std::cos(angle) * longitudinalRadius * 0.48
+		};
+	}
+	for (int side = 1; side < sides - 1; ++side)
+	{
+		if (hubAtX0)
+			StoreCarTriangle(&hubVertices[0], &hubVertices[side + 1], &hubVertices[side], pVertices, hub);
+		else
+			StoreCarTriangle(&hubVertices[0], &hubVertices[side], &hubVertices[side + 1], pVertices, hub);
+	}
 }
 
 
@@ -1351,41 +1601,13 @@ static void CreateCarInVB(SWVertex* pVertices)
 	};
 
 	// rear left wheel
-	uint32_t colour = SCRGB(SCR_BASE_COLOUR + 0);
-	// viewing from back
-	StoreCarTriangle(&car[0], &car[1], &car[2], pVertices, colour);
-	StoreCarTriangle(&car[0], &car[2], &car[3], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3], &car[2], &car[1], pVertices, colour);
-	StoreCarTriangle(&car[3], &car[1], &car[0], pVertices, colour);
-
-	// rear right wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 4], &car[1 + 4], &car[2 + 4], pVertices, colour);
-	StoreCarTriangle(&car[0 + 4], &car[2 + 4], &car[3 + 4], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 4], &car[2 + 4], &car[1 + 4], pVertices, colour);
-	StoreCarTriangle(&car[3 + 4], &car[1 + 4], &car[0 + 4], pVertices, colour);
-
-	// front left wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 8], &car[1 + 8], &car[2 + 8], pVertices, colour);
-	StoreCarTriangle(&car[0 + 8], &car[2 + 8], &car[3 + 8], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 8], &car[2 + 8], &car[1 + 8], pVertices, colour);
-	StoreCarTriangle(&car[3 + 8], &car[1 + 8], &car[0 + 8], pVertices, colour);
-
-	// front right wheel
-	// viewing from back
-	StoreCarTriangle(&car[0 + 12], &car[1 + 12], &car[2 + 12], pVertices, colour);
-	StoreCarTriangle(&car[0 + 12], &car[2 + 12], &car[3 + 12], pVertices, colour);
-	// viewing from front
-	StoreCarTriangle(&car[3 + 12], &car[2 + 12], &car[1 + 12], pVertices, colour);
-	StoreCarTriangle(&car[3 + 12], &car[1 + 12], &car[0 + 12], pVertices, colour);
-	/**/
+	StoreWheel(-VCAR_WIDTH / 2.0, -VCAR_WIDTH / 4.0, -VCAR_LENGTH / 2.0, pVertices, true);
+	StoreWheel(VCAR_WIDTH / 4.0, VCAR_WIDTH / 2.0, -VCAR_LENGTH / 2.0, pVertices, false);
+	StoreWheel(-VCAR_WIDTH / 2.0, -VCAR_WIDTH / 4.0, VCAR_LENGTH / 2.0, pVertices, true);
+	StoreWheel(VCAR_WIDTH / 4.0, VCAR_WIDTH / 2.0, VCAR_LENGTH / 2.0, pVertices, false);
 
 	// car left side
-	colour = SCRGB(SCR_BASE_COLOUR + 12);
+	uint32_t colour = SCRGB(SCR_BASE_COLOUR + 12);
 	StoreCarTriangle(&car[4 + 16], &car[5 + 16], &car[1 + 16], pVertices, colour);
 	StoreCarTriangle(&car[4 + 16], &car[1 + 16], &car[0 + 16], pVertices, colour);
 	// car right side
@@ -1408,6 +1630,19 @@ static void CreateCarInVB(SWVertex* pVertices)
 	colour = SCRGB(SCR_BASE_COLOUR + 9);
 	StoreCarTriangle(&car[3 + 16], &car[7 + 16], &car[4 + 16], pVertices, colour);
 	StoreCarTriangle(&car[3 + 16], &car[4 + 16], &car[0 + 16], pVertices, colour);
+
+	// Raised cockpit: a compact contrasting cabin breaks up the original wedge.
+	const COORD_3D cockpit[8] = {
+		{-24, 30, -42}, {24, 30, -42}, {-24, 30, 48}, {24, 30, 48},
+		{-15, 64, -24}, {15, 64, -24}, {-15, 58, 30}, {15, 58, 30}
+	};
+	colour = SCRGB(SCR_BASE_COLOUR + 6);
+	StoreCarQuad(cockpit[0], cockpit[4], cockpit[6], cockpit[2], pVertices, colour);
+	StoreCarQuad(cockpit[1], cockpit[3], cockpit[7], cockpit[5], pVertices, colour);
+	StoreCarQuad(cockpit[0], cockpit[1], cockpit[5], cockpit[4], pVertices, colour);
+	StoreCarQuad(cockpit[2], cockpit[6], cockpit[7], cockpit[3], pVertices, colour);
+	colour = SCRGB(SCR_BASE_COLOUR + 15);
+	StoreCarQuad(cockpit[4], cockpit[5], cockpit[7], cockpit[6], pVertices, colour);
 }
 
 
@@ -1434,8 +1669,21 @@ void DrawCar(SoftwareRenderer& r)
 {
 	if (!pCarVertices || numCarVertices < 3) return;
 
-	//r.SetDepthTestEnabled(true);
-	//r.SetCullMode(SoftwareRenderer::CULL_CCW);
-
 	r.DrawTriangleList(pCarVertices, 0, numCarVertices / 3, nullptr);
+}
+
+static void DrawPlayerCar(SoftwareRenderer& r)
+{
+	if (!pCarVertices || numCarVertices < 3) return;
+
+	constexpr int wheelTriangles = 24;
+	constexpr int wheelVertices = wheelTriangles * 3;
+	for (int wheel = 0; wheel < 4; ++wheel)
+	{
+		r.SetWorldMatrix(matWorldCarWheels[wheel]);
+		r.DrawTriangleList(pCarVertices, wheel * wheelVertices, wheelTriangles, nullptr);
+	}
+
+	r.SetWorldMatrix(matWorldCar);
+	r.DrawTriangleList(pCarVertices, 4 * wheelVertices, (numCarVertices - 4 * wheelVertices) / 3, nullptr);
 }
