@@ -325,7 +325,7 @@ void CreateResources()
 		if (bmp)
 			g_roadTexture[i] = SWTexture{bmp->pixels, bmp->width, bmp->height};
 		else
-			ShowError(format(L"Failed to load road texture: %hs", roadTexNames[i].data()), L"Warning");
+			ShowError(format(L"Failed to load road texture: %ls", pf::utf8_to_utf16(roadTexNames[i]).c_str()), L"Warning");
 	}
 
 	// Set projection transform
@@ -755,12 +755,12 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 				title = GetOpponentName(game.opponentsID);
 			}
 			if (game.lapNumber[PLAYER] > 0)
-				swprintf_s(lapText, 3, L"%d", game.lapNumber[PLAYER]);
+				std::swprintf(lapText, std::size(lapText), L"%d", game.lapNumber[PLAYER]);
 
 			const bool compactHud = screenW < 480;
 			const auto lapBoost = compactHud
-				? format(L"Lap %s  Boost %d", lapText, game.boostReserve)
-				: format(L"Lap: %s   Boost: %d", lapText, game.boostReserve);
+				? format(L"Lap %ls  Boost %d", lapText, game.boostReserve)
+				: format(L"Lap: %ls   Boost: %d", lapText, game.boostReserve);
 			const auto opponentDistance = compactHud
 				? format(L"Opp. distance %d", CalculateOpponentsDistance(game))
 				: format(L"Opponent Distance: %d", CalculateOpponentsDistance(game));

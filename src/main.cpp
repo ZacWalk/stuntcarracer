@@ -6,16 +6,20 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cwchar>
 #include <memory>
+#include <stdexcept>
 
 std::wstring format(const std::wstring_view fmt, ...)
 {
 	wchar_t buf[512];
+	const std::wstring terminated(fmt);
 	va_list args;
 	va_start(args, fmt);
-	vswprintf_s(buf, std::size(buf), fmt.data(), args);
+	const int written = std::vswprintf(buf, std::size(buf), terminated.c_str(), args);
 	va_end(args);
-	buf[std::size(buf) - 1] = L'\0';
+	if (written < 0 || static_cast<size_t>(written) >= std::size(buf))
+		throw std::runtime_error("Game text exceeds its formatting buffer.");
 	return buf;
 }
 

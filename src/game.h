@@ -14,6 +14,7 @@
 
 #include "platform.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string_view>
 #include <vector>

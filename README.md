@@ -65,6 +65,10 @@ Output is `exe\stunt-car-racer-64.exe`. The platform layer comes from
 `FetchContent`; a sibling `../libdesktop` checkout is used automatically when
 present.
 
+Game text uses standard wide formatting with explicit string specifiers, and
+the headless suite checks formatting failures as well as the physics and
+platform-reactor behavior. Windowing and audio remain libdesktop's responsibility.
+
 ## Documentation
 
 [AGENTS.md](AGENTS.md) — conventions for contributors and coding agents.

@@ -11,12 +11,16 @@
 //
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <cstring>
 #include <functional>
+#include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -36,31 +40,68 @@ namespace
 	// Simple tee logger: writes to file and stderr.
 	struct Logger
 	{
-		FILE* fp = nullptr;
+		std::ofstream file;
+		int checks = 0;
 		int failures = 0;
 
 		void open(const char* path)
 		{
-			fopen_s(&fp, path, "w");
+			file.open(path);
+			if (!file)
+			{
+				++failures;
+				std::fprintf(stderr, "Unable to open test log: error %d\n", errno);
+			}
 		}
 
 		void close()
 		{
-			if (fp) std::fclose(fp);
-			fp = nullptr;
+			if (!file.is_open()) return;
+			file.close();
+			if (file.fail())
+			{
+				++failures;
+				std::fprintf(stderr, "Unable to close the test log.\n");
+			}
 		}
 
 		void log(const char* fmt, ...)
 		{
 			va_list ap;
 			va_start(ap, fmt);
-			if (fp)
+			if (file)
 			{
 				va_list ap2;
 				va_copy(ap2, ap);
-				std::vfprintf(fp, fmt, ap2);
+				const int length = std::vsnprintf(nullptr, 0, fmt, ap2);
 				va_end(ap2);
-				std::fflush(fp);
+				if (length < 0)
+				{
+					++failures;
+					std::fprintf(stderr, "Unable to format the test log.\n");
+				}
+				else
+				{
+					std::vector<char> text(static_cast<size_t>(length) + 1);
+					va_copy(ap2, ap);
+					const int written = std::vsnprintf(text.data(), text.size(), fmt, ap2);
+					va_end(ap2);
+					if (written != length)
+					{
+						++failures;
+						std::fprintf(stderr, "Unable to format the test log.\n");
+					}
+					else
+					{
+						file.write(text.data(), length);
+						file.flush();
+						if (!file)
+						{
+							++failures;
+							std::fprintf(stderr, "Unable to write the test log.\n");
+						}
+					}
+				}
 			}
 			std::vfprintf(stderr, fmt, ap);
 			va_end(ap);
@@ -68,6 +109,7 @@ namespace
 
 		void check(const bool ok, const char* what)
 		{
+			++checks;
 			log("  [%s] %s\n", ok ? "PASS" : "FAIL", what);
 			if (!ok) ++failures;
 		}
@@ -720,6 +762,21 @@ int AppRunTests()
 	log.open("test_results.log");
 	log.log("Stunt Car Racer self-tests\n");
 	log.log("==========================\n");
+	log.check(format(L"Lap %ls  Boost %d", L"2", 99) == L"Lap 2  Boost 99",
+	          "portable wide formatting preserves the HUD text");
+	const std::wstring bounded_format(L"[%d]unused");
+	log.check(format(std::wstring_view(bounded_format.data(), 4), 7) == L"[7]",
+	          "formatting respects a nonterminated format view");
+	bool refused = false;
+	try
+	{
+		format(L"%ls", std::wstring(600, L'x').c_str());
+	}
+	catch (const std::runtime_error&)
+	{
+		refused = true;
+	}
+	log.check(refused, "formatting failure is explicit rather than truncated text");
 
 	// Minimal init: sin/cos table + initial track load.
 	InitialiseData(g_trackState);
@@ -745,8 +802,7 @@ int AppRunTests()
 	TestWindowFrame(log);
 
 	log.log("\n==========================\n");
-	log.log("Total failures: %d\n", log.failures);
-	const int rc = log.failures == 0 ? 0 : 1;
+	log.log("Total checks: %d\nTotal failures: %d\n", log.checks, log.failures);
 	log.close();
-	return rc;
+	return log.failures == 0 ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstring>
 
 // Software 3D renderer — platform-independent public API
 // Platform-specific implementation lives in SoftwareRenderer.cpp
