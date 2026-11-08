@@ -2,7 +2,6 @@
 
 #include <algorithm>
 
-#include "platform.h"
 #include "game.h"
 #include "render.software.h"
 

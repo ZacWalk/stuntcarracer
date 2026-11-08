@@ -1,5 +1,13 @@
 #pragma once
 
+// The game is a ui application: the shared platform owns the window and the drawn menu bar.
+enum class icon_index : int { none };
+enum class command_group : int { none };
+enum class commands : int { none };
+
+#include "libdesktop/ui.h"
+#include "libdesktop/ui/menu_bar.h"
+
 //
 // game.h — Shared declarations for the game module.
 //
@@ -12,7 +20,6 @@
 //   - Function declarations exported by game.cpp and the game.* modules
 //
 
-#include "platform.h"
 
 #include <cmath>
 #include <cstdint>
@@ -21,6 +28,7 @@
 
 struct SoundState;
 class SoftwareRenderer;
+extern SoftwareRenderer g_renderer;
 struct SWTexture;
 
 // ---------------------------------------------------------------------------
@@ -32,6 +40,8 @@ constexpr int32_t AMIGA_PAL_HZ = 3546895;
 constexpr int WINDOW_WIDTH = 640;
 constexpr int WINDOW_HEIGHT = 480;
 
+// The UI texture consumes BGRA memory, so keep the game's AARRGGBB packing rather than
+// using core::rgb's logical channel order.
 constexpr uint32_t D3DCOLOR_ARGB(const uint32_t a, const uint32_t r, const uint32_t g, const uint32_t b)
 {
 	return (a & 0xff) << 24 | (r & 0xff) << 16 | (g & 0xff) << 8 | b & 0xff;
@@ -57,23 +67,24 @@ std::wstring format(std::wstring_view fmt, ...);
 
 inline void ShowError(const std::wstring_view message, const std::wstring_view title)
 {
-	pf::platform_show_error(pf::utf16_to_utf8(message), pf::utf16_to_utf8(title));
+	const auto text = core::utf16_to_utf8(title) + ": " + core::utf16_to_utf8(message);
+	platform::show_error(text);
 }
 
-// Closes the main window; set by app_init.
+// Closes the ui frame that owns the game window.
 void GameClose();
 
-// The main window's event handler. app_init installs it; the tests drive it.
-pf::frame_reactor_ptr CreateGameReactor();
+// Window presentation policy kept independent of ui frame and native window objects.
+std::string GameWindowTitle(bool sound_available);
+core::recti GameWindowBounds(core::sizei screen, double scale);
 
-// Blits the software renderer's frame buffer to the main window.
-void GamePresent(const uint32_t* pixels, int cx, int cy);
-
-// Replaces the main window's menu bar.
-void GameSetMenu(std::vector<pf::menu_command> menu_def);
+// Presents the software renderer's surface through the ui frame.
+void GamePresent();
 
 // True while the window is minimised, so the frame loop can idle.
 bool GameIsMinimized();
+bool GameIsPaused();
+void GameSetInputActive(bool active);
 
 // The game runs happily with no audio device — and the headless tests never
 // create one — so every sound call has to tolerate a buffer that is not there.
@@ -85,20 +96,20 @@ constexpr float PAN_LEFT = -1.0f;
 constexpr float PAN_CENTER = 0.0f;
 constexpr float PAN_RIGHT = 1.0f;
 
-inline void SoundPlay(const pf::sound_buffer_ptr& b, const bool loop = false) { if (b) b->play(loop); }
-inline void SoundStop(const pf::sound_buffer_ptr& b) { if (b) b->stop(); }
-inline void SoundSetFrequency(const pf::sound_buffer_ptr& b, const uint32_t hz) { if (b) b->set_frequency(hz); }
-inline void SoundSetPan(const pf::sound_buffer_ptr& b, const float pan) { if (b) b->set_pan(pan); }
-inline void SoundSetPlayPosition(const pf::sound_buffer_ptr& b, const uint32_t pos) { if (b) b->set_play_position(pos); }
+inline void SoundPlay(const platform::sound_buffer_ptr& b, const bool loop = false) { if (b) b->play(loop); }
+inline void SoundStop(const platform::sound_buffer_ptr& b) { if (b) b->stop(); }
+inline void SoundSetFrequency(const platform::sound_buffer_ptr& b, const uint32_t hz) { if (b) b->set_frequency(hz); }
+inline void SoundSetPan(const platform::sound_buffer_ptr& b, const float pan) { if (b) b->set_pan(pan); }
+inline void SoundSetPlayPosition(const platform::sound_buffer_ptr& b, const uint32_t pos) { if (b) b->set_play_position(pos); }
 
-inline void SoundSetVolume(const pf::sound_buffer_ptr& b, const int32_t amigaVolume)
+inline void SoundSetVolume(const platform::sound_buffer_ptr& b, const int32_t amigaVolume)
 {
 	if (!b) return;
 	const auto clamped = amigaVolume < 0 || amigaVolume > AMIGA_VOLUME_MAX ? AMIGA_VOLUME_MAX : amigaVolume;
 	b->set_volume(static_cast<float>(clamped) / AMIGA_VOLUME_MAX);
 }
 
-inline uint32_t SoundPlayPosition(const pf::sound_buffer_ptr& b)
+inline uint32_t SoundPlayPosition(const platform::sound_buffer_ptr& b)
 {
 	return b ? b->play_position().value_or(0) : 0;
 }
@@ -107,8 +118,8 @@ inline uint32_t SoundPlayPosition(const pf::sound_buffer_ptr& b)
 bool AppInit();
 void AppRun();
 void AppHandleFrameSize(int cx, int cy);
-void AppHandleKeyDown(uint32_t nChar);
-void AppHandleKeyUp(uint32_t nChar);
+void AppHandleKeyDown(char32_t nChar);
+void AppHandleKeyUp(char32_t nChar);
 void AppResetInput();
 // One pass of the frame loop while the window is minimised; the tests call it.
 void AppIdleMinimized();
@@ -118,8 +129,8 @@ int AppRunTests();
 // and its window title says so.
 extern bool g_soundAvailable;
 
-// The menu bar, with its accelerators. AppInit installs it; the tests read it.
-std::vector<pf::menu_command> BuildGameMenu();
+// The drawn menu bar, with its accelerators. The ui app owns the returned commands.
+std::vector<ui::command_ptr> BuildGameMenu();
 
 // ---------------------------------------------------------------------------
 // Screen & rendering constants
@@ -571,7 +582,7 @@ void ResetPlayer(GameState& player);
 
 double LimitViewpointY(TrackState& track, GameState& player, double y);
 int32_t CalculateDisplaySpeed(const GameState& player);
-void FramesWheelsEngine(SoundState& sound, pf::sound_buffer_ptr engineSoundBuffers[]);
+void FramesWheelsEngine(SoundState& sound, platform::sound_buffer_ptr engineSoundBuffers[]);
 void EngineSoundStopped();
 void CalculatePlayersRoadPosition(TrackState& track, GameState& player);
 void DrawOtherGraphics(GameState& player, const SoundState& sound);
@@ -643,13 +654,13 @@ struct SoundState
 	SoundState(SoundState&&) = default;
 	SoundState& operator=(SoundState&&) = default;
 
-	pf::sound_buffer_ptr WreckSoundBuffer;
-	pf::sound_buffer_ptr HitCarSoundBuffer;
-	pf::sound_buffer_ptr GroundedSoundBuffer;
-	pf::sound_buffer_ptr CreakSoundBuffer;
-	pf::sound_buffer_ptr SmashSoundBuffer;
-	pf::sound_buffer_ptr OffRoadSoundBuffer;
-	pf::sound_buffer_ptr EngineSoundBuffers[8];
+	platform::sound_buffer_ptr WreckSoundBuffer;
+	platform::sound_buffer_ptr HitCarSoundBuffer;
+	platform::sound_buffer_ptr GroundedSoundBuffer;
+	platform::sound_buffer_ptr CreakSoundBuffer;
+	platform::sound_buffer_ptr SmashSoundBuffer;
+	platform::sound_buffer_ptr OffRoadSoundBuffer;
+	platform::sound_buffer_ptr EngineSoundBuffers[8];
 	bool engineSoundPlaying = false;
 };
 

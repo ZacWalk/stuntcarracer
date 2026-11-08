@@ -2,7 +2,6 @@
 //
 // All Track data from Amiga StuntCarRacer is scaled by PC_FACTOR (2x).
 
-#include "platform.h"
 #include "game.h"
 
 #include "render.software.h"
@@ -1871,7 +1870,7 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 
 		for (int32_t n = 0; n < NUM_TRACKS; n++)
 		{
-			const auto buf = pf::embedded_resource_data(track_resource_names[n]);
+			const auto buf = platform::embedded_resource_data(track_resource_names[n]);
 			if (buf.empty())
 				return false;
 

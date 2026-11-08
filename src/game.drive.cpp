@@ -14,7 +14,6 @@
 //   Angles are doubles in MAX_ANGLE units; convert with ANGLE_TO_RADIANS
 //       before feeding std::sin / std::cos.
 
-#include "platform.h"
 #include "game.h"
 
 
@@ -2526,7 +2525,7 @@ int engineSoundIndex = -1;
 // All sounds playing but mute the ones that aren't required - WORSE
 // Start the new sound playing at the same percentage through as the previous sound - SLIGHTLY BETTER
 
-void FramesWheelsEngine(SoundState& sound, pf::sound_buffer_ptr engineSoundBuffers[])
+void FramesWheelsEngine(SoundState& sound, platform::sound_buffer_ptr engineSoundBuffers[])
 {
 	int r = engineRevs + engineRevsChange;
 	static int lastEngineSoundIndex = -1;

@@ -1,6 +1,8 @@
 #pragma once
 #include <cstring>
 
+#include "libdesktop/core.h"
+
 // Software 3D renderer — platform-independent public API
 // Platform-specific implementation lives in SoftwareRenderer.cpp
 
@@ -123,7 +125,7 @@ public:
 	SoftwareRenderer(SoftwareRenderer&&) = default;
 	SoftwareRenderer& operator=(SoftwareRenderer&&) = default;
 
-	// Platform-specific init/present — called only from platform layer
+	// Surface-backed rasterizer API; the ui content element presents GetSurface().
 	bool Init(int width, int height);
 	void Resize(int width, int height);
 
@@ -148,7 +150,8 @@ public:
 
 	int GetWidth() const { return m_width; }
 	int GetHeight() const { return m_height; }
-	const uint32_t* const GetPixels() const { return m_pixels.data(); }
+	const uint32_t* GetPixels() const;
+	core::const_surface_ptr GetSurface() const;
 
 private:
 	void CreateBackbuffer(int width, int height);
@@ -170,8 +173,17 @@ private:
 		return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 	}
 
-	// Platform-independent state
-	std::vector<uint32_t> m_pixels;
+	uint32_t* PixelData()
+	{
+		return m_surface ? reinterpret_cast<uint32_t*>(m_surface->pixels()) : nullptr;
+	}
+	const uint32_t* PixelData() const
+	{
+		return m_surface ? reinterpret_cast<const uint32_t*>(m_surface->pixels()) : nullptr;
+	}
+
+	// The rasterizer writes directly into libdesktop's packed surface.
+	core::surface_ptr m_surface;
 	std::vector<double> m_depthBuffer;
 	int m_width = 0;
 	int m_height;

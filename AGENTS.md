@@ -4,25 +4,23 @@ This is a Windows C++ port of the classic game **Stunt Car Racer** (originally b
 
 ## Source files (src/)
 
-- **main.cpp** — Binds the game to the shared platform: `app_init`, the window
-  reactor (create, close, input, resize, focus) and the hand-off to the game's
-  own frame loop. `app_init` runs before the platform creates the window, so
-  anything that needs the window (title, size) belongs in the reactor's
-  `create`, and the reactor must close the window on `close` itself
-- **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs, the null-safe sound helpers
-- **game.cpp** — Top-level game logic: app entry points, frame loop, the menu bar and its accelerators (`BuildGameMenu`), palette/resources/sound setup, viewpoints, sin/cos table, car model construction & rendering, world transforms
+- **main.cpp** — `ui::app` entry point, drawn menu-bar/frame host, software-surface element, input forwarding and the game's own frame loop
+- **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs, and null-safe sound helpers
+- **game.cpp** — Top-level game logic: frame update/render, menu commands and accelerators (`BuildGameMenu`), palette/resources/sound setup, viewpoints, car construction and world transforms
 - **game.backdrop.cpp** — Sky/ground horizon and distant scenery rendering
 - **game.drive.cpp** — Car physics and player driving behaviour
 - **game.opponent.cpp** — Opponent AI, car-to-car collision detection, race position tracking
 - **game.track.cpp** — Track data loading, conversion, and rendering
-- **render.software.h / .cpp** — Software 3D renderer, platform-independent
-- **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks, plus the menu shortcuts, the pause and minimise rules, and the window reactor against a fake frame)
+- **render.software.h / .cpp** — Software 3D renderer writing a `core::surface`
+- **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks, menu shortcuts, pause and minimise rules)
 
-The platform layer (windowing, input, menus, audio, timers) lives in the shared
-**libdesktop** repository behind the `pf::` namespace, and no Windows SDK header
-is included anywhere in this repo. Tracks, samples and road textures are
-compiled in as byte arrays by `platform_add_app(EMBED ...)` and fetched by file
-name with `pf::embedded_resource_data`.
+The platform layer lives in the shared **libdesktop** repository's `core`,
+`platform`, `render` and `ui` libraries. The application is a `ui::app`; its
+menu bar is a `ui::control` in the frame host's element tree, and the renderer's
+`core::surface` is uploaded as a texture by the content element. Tracks, samples
+and road textures are compiled into the executable by
+`libdesktop_add_app(EMBED ...)` and fetched with
+`platform::embedded_resource_data`.
 
 ## Build & test
 
@@ -53,8 +51,8 @@ shared physics/track-geometry code — the chain-drop suite catches a lot of
 ## Rendering system
 
 A small, single-mode software rasterizer in `render.software.*`. The frame
-buffer is a `uint32_t` BGRA backbuffer; the platform layer blits it to the
-window each frame.
+buffer is a packed `core::surface`; the UI content element uploads it as a
+texture each frame.
 
 **Pipeline (per triangle):**
 1. World/View/Projection matrices set via `SetWorldMatrix` / `SetViewMatrix` /

@@ -1,14 +1,18 @@
-// main.cpp — binds the game to the shared platform layer: window callbacks,
-// input translation, and the game's own frame loop.
+// main.cpp — binds the game to libdesktop's ui application and frame tree.
 
 #include "game.h"
+#include "render.software.h"
+
+#include "libdesktop/ui/elements.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 
 std::wstring format(const std::wstring_view fmt, ...)
 {
@@ -25,82 +29,304 @@ std::wstring format(const std::wstring_view fmt, ...)
 
 namespace
 {
-	pf::window_frame_ptr g_frame;
+	ui::frame_ptr g_frame;
 	bool g_minimized = false;
 
-	struct game_reactor final : pf::frame_reactor
+	// The software game renderer owns the pixels; this element only uploads the current
+	// surface to the UI renderer and stretches it over the content below the menu bar.
+	class game_surface_element final : public ui::element
 	{
-		uint32_t handle_message(pf::window_frame_ptr window, const pf::message_type message,
-		                        const pf::message_params&) override
-		{
-			if (message == pf::message_type::create)
-			{
-				// app_init runs before the platform creates the window, so this is
-				// the first point at which the title and the position stick.
-				window->set_text(g_soundAvailable ? "Stunt Car Racer" : "Stunt Car Racer (no sound)");
+		SoftwareRenderer& _renderer;
+		mutable render::texture_ptr _texture;
+		mutable core::sizei _texture_extent;
 
+	public:
+		explicit game_surface_element(SoftwareRenderer& renderer) :
+			ui::element(ui::element_options(ui::flex_item::grow | ui::flex_item::stretch)), _renderer(renderer)
+		{
+			padding = {0, 0};
+			margin = {0, 0};
+		}
+
+		core::sizei measure(render::measure_context&, const int) const override
+		{
+			// The column flex layout gives this item all space left by the menu bar.
+			return {};
+		}
+
+		void render(render::draw_context& dc, const core::pointi element_offset) const override
+		{
+			const auto surface = _renderer.GetSurface();
+			if (!surface || surface->empty() || bounds.is_empty()) return;
+
+			if (!_texture || _texture_extent != surface->dimensions())
+			{
+				_texture = dc.create_texture();
+				_texture_extent = {};
+			}
+
+			if (_texture)
+			{
+				if (_texture->update(surface) == render::texture_update_result::failed)
+				{
+					_texture.reset();
+				}
+				else
+				{
+					_texture_extent = surface->dimensions();
+				}
+			}
+
+			if (_texture)
+				dc.draw_texture(_texture, bounds.offset(element_offset), 1.0f, render::texture_sampler::point);
+		}
+
+		void dispatch_event(const ui::element_event& event) override
+		{
+			if (event.type == ui::element_event_type::free_graphics_resources)
+			{
+				_texture.reset();
+				_texture_extent = {};
+			}
+		}
+	};
+
+	class game_app final : public ui::app, public ui::element_host,
+	                       public std::enable_shared_from_this<game_app>
+	{
+		platform::setting_file_ptr _settings;
+		ui::frame_ptr _frame;
+		ui::elements_ptr _root;
+		std::shared_ptr<game_surface_element> _surface;
+		std::vector<ui::command_ptr> _menus;
+		bool _window_active = true;
+		bool _window_focused = true;
+
+		void update_input_active()
+		{
+			GameSetInputActive(_window_active && _window_focused);
+		}
+
+	public:
+		bool load_settings(const platform::setting_file_ptr& store) override
+		{
+			_settings = store;
+			return true;
+		}
+
+		bool parse_command_line(const std::string_view command_line) override
+		{
+			for (const auto part : core::split(command_line, true))
+			{
+				if (core::icmp(part, "-test") == 0 || core::icmp(part, "/test") == 0)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		int run_console_mode() override
+		{
+			return AppRunTests();
+		}
+
+		bool wants_gpu() const override
+		{
+			return false;
+		}
+
+		bool key_down(const char32_t key, const platform::key_state keys) override
+		{
+			const auto is_driving_key = key == platform::keys::LEFT || key == platform::keys::RIGHT ||
+				key == platform::keys::UP || key == platform::keys::DOWN ||
+				key == platform::keys::CONTROL;
+			const auto is_direct_game_key = (key >= '1' && key <= '8') ||
+				key == platform::keys::SPACE || key == 'S' || key == 's' || is_driving_key;
+			const auto is_menu_game_key = key == platform::keys::ESCAPE || key == platform::keys::F5 ||
+				key == platform::keys::F6 || key == platform::keys::F7 || key == platform::keys::F9 ||
+				key == platform::keys::F10 || key == 'P' || key == 'O' || key == 'R' || key == 'Z';
+
+			// Alt+F4, Alt+Space and other system combinations belong to the native window.
+			if (keys.alt) return false;
+
+			// Repeats keep held driving state alive, but must not toggle screens or replay menus.
+			if (keys.repeat)
+			{
+				if (is_driving_key) AppHandleKeyDown(key);
+				return is_direct_game_key || is_menu_game_key;
+			}
+
+			if (ui::dispatch_accelerator(_menus, key, keys)) return true;
+			if (is_direct_game_key)
+			{
+				AppHandleKeyDown(key);
+				return true;
+			}
+			return is_menu_game_key;
+		}
+
+		bool text_input(std::string_view) override
+		{
+			return false;
+		}
+
+		ui::focus_mode focus_mode() const override
+		{
+			return ui::focus_mode::none;
+		}
+
+		void track_menu(const ui::frame_ptr& parent, const core::recti bounds,
+		                const std::vector<ui::command_ptr>& commands) override
+		{
+			if (parent) parent->track_menu(bounds, commands);
+		}
+
+		void activate(const bool active) override
+		{
+			_window_active = active;
+			update_input_active();
+		}
+
+		void focus_changed(const bool has_focus, const ui::control_ptr&) override
+		{
+			_window_focused = has_focus;
+			update_input_active();
+		}
+
+		bool init(std::string_view) override
+		{
+			if (!_settings) _settings = platform::settings();
+			const bool placement_restored = platform::read_placement(
+				_settings, platform::placement_setting_name()).has_value();
+			if (!AppInit()) return false;
+
+			_surface = std::make_shared<game_surface_element>(g_renderer);
+			_menus = BuildGameMenu();
+			auto menu_bar = ui::make_menu_bar(_menus);
+			_root = std::make_shared<ui::elements>(std::vector<ui::element_ptr>{menu_bar, _surface});
+			_root->padding = {0, 0};
+			_root->margin = {0, 0};
+			_root->flex_container.direction = ui::flex_direction::column;
+			_root->flex_container.wrap = ui::flex_wrap::no_wrap;
+			_root->flex_container.align_items = ui::flex_align::stretch;
+
+			ui::frame_style style;
+			style.drawn_caption = false;
+			style.hardware_accelerated = false;
+			style.client_size = {WINDOW_WIDTH, WINDOW_HEIGHT};
+			style.minimum_client = {320, 240};
+			style.resizable = true;
+			style.colors = {
+				ui::style::colors.view_background,
+				ui::style::colors.view_text,
+				ui::style::colors.view_selected_background
+			};
+
+			const auto self = shared_from_this();
+			const auto app_self = std::static_pointer_cast<ui::app>(self);
+			const auto host_self = std::static_pointer_cast<ui::element_host>(self);
+			const auto frame_host_self = std::static_pointer_cast<ui::frame_host>(host_self);
+			_frame = ui::create_app_frame(app_self, _settings, frame_host_self, style);
+			if (!_frame) return false;
+			g_frame = _frame;
+			_frame->window_text(GameWindowTitle(g_soundAvailable));
+			if (!placement_restored)
+			{
 				// The process is DPI aware: scale the 640x480 window so it comes
 				// up the same physical size on every monitor.
-				const auto scale = window->get_dpi_scale();
-				const auto screen = pf::platform_screen_size();
-				const int cx = std::min(static_cast<int>(WINDOW_WIDTH * scale), screen.cx);
-				const int cy = std::min(static_cast<int>(WINDOW_HEIGHT * scale), screen.cy);
-				const int left = std::max(0, (screen.cx - cx) / 2);
-				const int top = std::max(0, (screen.cy - cy) / 2);
-				window->move_window({left, top, left + cx, top + cy});
-				return 0;
+				const auto screen = platform::primary_screen_size();
+				_frame->window_bounds(GameWindowBounds(screen, _frame->scale_factor()), true);
 			}
+			_frame->layout();
+			return true;
+		}
 
-			if (message == pf::message_type::erase_background)
-				return 1; // the frame loop paints every pixel
+		bool owns_loop() const override
+		{
+			return true;
+		}
 
-			// The platform leaves WM_CLOSE to the reactor; without this the close
-			// box and Alt+F4 do nothing and only Game > Exit can end the game.
-			if (message == pf::message_type::close)
-			{
-				window->close();
-				return 0;
-			}
-
-			if (message == pf::message_type::kill_focus)
-				AppResetInput();
-
+		int main_loop() override
+		{
+			AppRun();
 			return 0;
 		}
 
-		uint32_t handle_keyboard(pf::window_frame_ptr, const pf::keyboard_message_type message,
-		                         const pf::keyboard_params& params) override
+		void exit() override
 		{
-			if (message == pf::keyboard_message_type::key_down)
-			{
-				// Auto-repeat is ignored except for the driving keys, whose
-				// repeats the original relies on to keep the input latched.
-				const bool driving = params.vk == pf::platform_key::Left ||
-					params.vk == pf::platform_key::Right ||
-					params.vk == pf::platform_key::Up ||
-					params.vk == pf::platform_key::Down ||
-					params.vk == pf::platform_key::Control;
-
-				if (!params.repeat || driving)
-					AppHandleKeyDown(params.vk);
-			}
-			else if (message == pf::keyboard_message_type::key_up)
-			{
-				AppHandleKeyUp(params.vk);
-			}
-
-			return 0;
+			GameSetInputActive(false);
+			_frame.reset();
+			g_frame.reset();
 		}
 
-		void handle_paint(pf::window_frame_ptr&, pf::draw_context&) override
+		const ui::frame_ptr frame() const override
+		{
+			return _frame ? _frame : ui::no_frame();
+		}
+
+		const ui::frame_ptr owner() override
+		{
+			return frame();
+		}
+
+		void invoke(commands) override
 		{
 		}
 
-		void handle_size(pf::window_frame_ptr&, const pf::isize extent, pf::measure_context&) override
+		bool is_command_checked(commands) override
 		{
-			g_minimized = extent.cx <= 0 || extent.cy <= 0;
-			if (!g_minimized)
-				AppHandleFrameSize(extent.cx, extent.cy);
+			return false;
+		}
+
+		void track_menu(const core::recti bounds, const std::vector<ui::command_ptr>& commands) override
+		{
+			frame()->track_menu(bounds, commands);
+		}
+
+		void controller_changed() override
+		{
+			frame()->invalidate();
+		}
+
+		ui::controller_ptr controller_from_location(const core::pointi loc,
+		                                             ui::hit_test_context& ctx) override
+		{
+			const auto host = std::static_pointer_cast<ui::element_host>(shared_from_this());
+			return _root ? _root->controller_from_location(host, loc, {}, ctx) : nullptr;
+		}
+
+		void invalidate_element(const ui::element_ptr& element) override
+		{
+			frame()->invalidate(element ? element->invalidate_bounds() : core::recti{});
+		}
+
+		void invalidate(const ui::host_invalid what) override
+		{
+			if (what && ui::host_invalid::layout) frame()->layout();
+			if (what && ui::host_invalid::redraw) frame()->invalidate();
+		}
+
+		void on_window_layout(render::measure_context& mc, const core::sizei extent,
+		                      const bool is_minimized) override
+		{
+			g_minimized = is_minimized || extent.is_empty();
+			if (g_minimized || !_root) return;
+
+			_root->layout(mc, core::recti(0, 0, extent.cx, extent.cy));
+			const auto content = _surface->bounds;
+			if (!content.is_empty()) AppHandleFrameSize(content.width(), content.height());
+		}
+
+		void on_window_paint(render::draw_context& dc) override
+		{
+			dc.clear(core::color(dc.colors.background, dc.colors.alpha));
+			if (_root) _root->render(dc, {});
+		}
+
+		void visit_elements(const std::function<void(const ui::element_ptr&, core::pointi)>& visit) override
+		{
+			if (_root) visit(_root, {});
 		}
 	};
 }
@@ -110,19 +336,13 @@ void GameClose()
 	if (g_frame) g_frame->close();
 }
 
-pf::frame_reactor_ptr CreateGameReactor()
+void GamePresent()
 {
-	return std::make_shared<game_reactor>();
-}
-
-void GamePresent(const uint32_t* pixels, const int cx, const int cy)
-{
-	if (g_frame) g_frame->present_pixels(pixels, cx, cy);
-}
-
-void GameSetMenu(std::vector<pf::menu_command> menu_def)
-{
-	if (g_frame) g_frame->set_menu(std::move(menu_def));
+	if (g_frame)
+	{
+		g_frame->invalidate();
+		g_frame->redraw_now();
+	}
 }
 
 bool GameIsMinimized()
@@ -130,41 +350,9 @@ bool GameIsMinimized()
 	return g_minimized;
 }
 
-app_init_result app_init(const pf::window_frame_ptr& main_frame,
-                         const std::span<const std::string_view> params)
+int main(int argc, char** argv)
 {
-	for (const auto& param : params)
-	{
-		if (pf::icmp(param, "-test") == 0 || pf::icmp(param, "/test") == 0)
-		{
-			pf::attach_console();
-			return {false, AppRunTests()};
-		}
-	}
-
-	pf::config_set_app_name("stuntcarracer");
-
-	g_frame = main_frame;
-	main_frame->set_reactor(CreateGameReactor());
-
-	if (!AppInit())
-		return {false, 1};
-
-	app_init_result result;
-	result.main_loop = []
-	{
-		AppRun();
-		pf::sound_shutdown();
-		return 0;
-	};
-	return result;
-}
-
-void app_idle()
-{
-}
-
-void app_destroy()
-{
-	g_frame.reset();
+	core::set_app_name("stuntcarracer");
+	auto app = std::make_shared<game_app>();
+	return platform::run(app, argc, argv);
 }

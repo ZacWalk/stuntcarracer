@@ -1,12 +1,11 @@
 // Software 3D renderer — platform-independent implementation
 
-#include "platform.h"
 #include "render.software.h"
 
-// Strip alpha from ARGB color for DIB pixel format
+// Preserve AARRGGBB channel order and make the software frame opaque for UI textures.
 static inline uint32_t ColorToDIB(const uint32_t argb)
 {
-	return argb & 0x00FFFFFF;
+	return argb | 0xFF000000;
 }
 
 Mat4 Mat4Multiply(const Mat4& a, const Mat4& b)
@@ -133,6 +132,16 @@ SoftwareRenderer::~SoftwareRenderer()
 {
 }
 
+const uint32_t* SoftwareRenderer::GetPixels() const
+{
+	return PixelData();
+}
+
+core::const_surface_ptr SoftwareRenderer::GetSurface() const
+{
+	return m_surface;
+}
+
 bool SoftwareRenderer::Init(const int width, const int height)
 {
 	CreateBackbuffer(width, height);
@@ -148,7 +157,8 @@ void SoftwareRenderer::CreateBackbuffer(const int width, const int height)
 {
 	m_width = width;
 	m_height = height;
-	m_pixels.resize(width * height);
+	if (!m_surface) m_surface = std::make_shared<core::surface>();
+	m_surface->alloc(width, height, core::texture_format::ARGB);
 	m_depthBuffer.resize(width * height);
 }
 
@@ -156,14 +166,14 @@ void SoftwareRenderer::DestroyBackbuffer()
 {
 	m_width = 0;
 	m_height = 0;
-	m_pixels.clear();
+	m_surface.reset();
 	m_depthBuffer.clear();
 }
 
 void SoftwareRenderer::Clear(const uint32_t color)
 {
 	const uint32_t dibColor = ColorToDIB(color);
-	std::fill(m_pixels.begin(), m_pixels.end(), dibColor);
+	std::fill(PixelData(), PixelData() + m_width * m_height, dibColor);
 }
 
 void SoftwareRenderer::ClearDepth()
@@ -376,7 +386,7 @@ void SoftwareRenderer::ProcessAndRasterizeTriangle(const ClipSpaceVert& cv0, con
 
 static inline uint32_t SampleTexture(const SWTexture& tex, double u, double v)
 {
-	if (tex.pixels.empty()) return 0xFFFFFF;
+	if (tex.pixels.empty()) return 0x00FFFFFF;
 	u = u - floor(u);
 	v = v - floor(v);
 	int tx = static_cast<int>(u * tex.width) % tex.width;
@@ -469,7 +479,7 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 	double zRow = bary0 * v0.z + bary1 * v1.z + bary2 * v2.z + m_depthBias;
 
 	// Hoist member fields into local __restrict pointers for the inner loop
-	uint32_t* __restrict pixels = m_pixels.data();
+	uint32_t* __restrict pixels = PixelData();
 	double* __restrict depthBuf = m_depthBuffer.data();
 	const int scanWidth = m_width;
 
@@ -562,7 +572,7 @@ void SoftwareRenderer::RasterizeTriangle(const TransformedVert& v0, const Transf
 						int ri = (std::min)(255, (std::max)(0, static_cast<int>(rf)));
 						int gi = (std::min)(255, (std::max)(0, static_cast<int>(gf)));
 						int bi = (std::min)(255, (std::max)(0, static_cast<int>(bf)));
-						pixels[idx] = static_cast<uint32_t>(ri << 16 | gi << 8 | bi);
+						pixels[idx] = ColorToDIB(static_cast<uint32_t>(ri << 16 | gi << 8 | bi));
 					}
 				}
 				w0 += stepX0;
@@ -668,7 +678,7 @@ void SoftwareRenderer::DrawScreenTriangleFan(const Point2D* pts, const int numPo
 	if (numPoints < 3) return;
 
 	const uint32_t dibColor = ColorToDIB(color);
-	uint32_t* __restrict pixels = m_pixels.data();
+	uint32_t* __restrict pixels = PixelData();
 	const int scanWidth = m_width;
 
 	for (int i = 1; i < numPoints - 1; i++)
@@ -782,7 +792,7 @@ void SoftwareRenderer::FillRect(int x1, int y1, int x2, int y2, const uint32_t c
 
 	for (int y = y1; y <= y2; y++)
 	{
-		const auto row = m_pixels.data() + y * m_width;
+		const auto row = PixelData() + y * m_width;
 		std::fill(row + x1, row + x2 + 1, dibColor);
 	}
 }
@@ -801,7 +811,7 @@ void SoftwareRenderer::BlendRect(int x1, int y1, int x2, int y2, const uint32_t 
 	const uint32_t inverseOpacity = 255 - opacity;
 	for (int y = y1; y <= y2; ++y)
 	{
-		uint32_t* row = m_pixels.data() + y * m_width;
+		uint32_t* row = PixelData() + y * m_width;
 		for (int x = x1; x <= x2; ++x)
 		{
 			const uint32_t destination = row[x];
@@ -814,7 +824,8 @@ void SoftwareRenderer::BlendRect(int x1, int y1, int x2, int y2, const uint32_t 
 					(sourceChannel * opacity + destinationChannel * inverseOpacity + 127) / 255;
 				blended |= channel << shift;
 			}
-			row[x] = blended;
+			// The texture is ARGB, so the blended HUD band must remain opaque.
+			row[x] = blended | 0xFF000000;
 		}
 	}
 }
@@ -955,7 +966,7 @@ static uint8_t font8x8[128][8] = {
 void SoftwareRenderer::DrawGameText(const int x, const int y, const std::wstring_view text, const uint32_t color)
 {
 	const uint32_t dibColor = ColorToDIB(color);
-	uint32_t* __restrict pixels = m_pixels.data();
+	uint32_t* __restrict pixels = PixelData();
 	const int w = m_width;
 	const int h = m_height;
 	int cx = x;
@@ -992,7 +1003,7 @@ void SoftwareRenderer::DrawTextLargeCentered(const int y, const std::wstring_vie
 	const int x = (m_width - textWidth) / 2;
 
 	const uint32_t dibColor = ColorToDIB(color);
-	uint32_t* __restrict pixels = m_pixels.data();
+	uint32_t* __restrict pixels = PixelData();
 	const int w = m_width;
 	const int h = m_height;
 	int cx = x;

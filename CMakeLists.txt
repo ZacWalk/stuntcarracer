@@ -28,17 +28,17 @@ endif()
 include(FetchContent)
 FetchContent_Declare(libdesktop
     GIT_REPOSITORY https://github.com/ZacWalk/libdesktop.git
-    GIT_TAG        31aae322af6e0696a9597726705b1121bd31580b
+    GIT_TAG        04109ee82a500db38d439fa281bbc3f43124adfe
 )
 FetchContent_MakeAvailable(libdesktop)
 
 # Track data, samples and road textures are compiled in as byte arrays and
-# looked up by file name — see pf::embedded_resource_data.
+# looked up by file name — see platform::embedded_resource_data.
 file(GLOB SCR_TRACKS  "${CMAKE_CURRENT_SOURCE_DIR}/Tracks/*.bin")
 file(GLOB SCR_SOUNDS  "${CMAKE_CURRENT_SOURCE_DIR}/Sounds/*.wav")
 file(GLOB SCR_BITMAPS "${CMAKE_CURRENT_SOURCE_DIR}/Bitmap/*.bmp")
 
-platform_add_app(stuntcarracer
+libdesktop_add_app(stuntcarracer
     SOURCES
         src/game.backdrop.cpp
         src/game.cpp
@@ -52,6 +52,8 @@ platform_add_app(stuntcarracer
     OUTPUT_NAME stunt-car-racer-64
     EMBED       ${SCR_TRACKS} ${SCR_SOUNDS} ${SCR_BITMAPS}
 )
+
+target_link_libraries(stuntcarracer PRIVATE libdesktop::ui)
 
 target_include_directories(stuntcarracer PRIVATE src)
 target_compile_options(stuntcarracer PRIVATE /W3 /MP)

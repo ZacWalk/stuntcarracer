@@ -15,7 +15,6 @@
 #include <cmath>
 #include <ctime>
 
-#include "platform.h"
 #include "game.h"
 #include "render.software.h"
 
@@ -58,6 +57,7 @@ static bool bFrameMoved = false;
 
 static bool bShowStats = false;
 static bool bPaused = false;
+static bool g_gameInputActive = true;
 static bool bPlayerPaused = false;
 static bool bOpponentPaused = false;
 static bool bOutsideView = false;
@@ -242,6 +242,20 @@ ScreenSize GetScreenDimensions(const SoftwareRenderer& r)
 	return {r.GetWidth(), r.GetHeight()};
 }
 
+std::string GameWindowTitle(const bool sound_available)
+{
+	return sound_available ? "Stunt Car Racer" : "Stunt Car Racer (no sound)";
+}
+
+core::recti GameWindowBounds(const core::sizei screen, const double scale)
+{
+	const int cx = (std::min)(static_cast<int>(WINDOW_WIDTH * scale), screen.cx);
+	const int cy = (std::min)(static_cast<int>(WINDOW_HEIGHT * scale), screen.cy);
+	const int left = (std::max)(0, (screen.cx - cx) / 2);
+	const int top = (std::max)(0, (screen.cy - cy) / 2);
+	return {left, top, left + cx, top + cy};
+}
+
 // Amiga-style palette for game colors
 constexpr int NUM_PALETTE_ENTRIES = 42;
 
@@ -320,12 +334,23 @@ void CreateResources()
 	g_roadTexture.resize(std::size(roadTexNames));
 	for (size_t i = 0; i < std::size(roadTexNames); ++i)
 	{
-		const auto data = pf::embedded_resource_data(roadTexNames[i]);
-		const auto bmp = data.empty() ? nullptr : pf::load_bitmap_memory(data.data(), data.size());
-		if (bmp)
-			g_roadTexture[i] = SWTexture{bmp->pixels, bmp->width, bmp->height};
+		const auto data = platform::embedded_resource_data(roadTexNames[i]);
+		const auto image = data.empty() ? nullptr : platform::load_image_memory(data);
+		if (image)
+		{
+			SWTexture texture;
+			texture.width = image->width();
+			texture.height = image->height();
+			texture.pixels.resize(static_cast<size_t>(texture.width) * texture.height);
+			for (int y = 0; y < texture.height; ++y)
+			{
+				const auto* row = reinterpret_cast<const uint32_t*>(image->pixels_line(y));
+				std::copy(row, row + texture.width, texture.pixels.begin() + static_cast<size_t>(y) * texture.width);
+			}
+			g_roadTexture[i] = std::move(texture);
+		}
 		else
-			ShowError(format(L"Failed to load road texture: %ls", pf::utf8_to_utf16(roadTexNames[i]).c_str()), L"Warning");
+			ShowError(format(L"Failed to load road texture: %ls", core::utf8_to_utf16(roadTexNames[i]).c_str()), L"Warning");
 	}
 
 	// Set projection transform
@@ -686,7 +711,7 @@ static void StartGame()
 	g_gameMode = GAME_IN_PROGRESS;
 	ResetLapData(g_gameState, OPPONENT);
 	ResetLapData(g_gameState, PLAYER);
-	gameStartTime = pf::platform_get_time();
+	gameStartTime = platform::monotonic_seconds();
 	gameEndTime = 0;
 	g_gameState.boostReserve = g_trackState.StandardBoost;
 	g_gameState.boostUnit = 0;
@@ -750,7 +775,7 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 			uint32_t titleColor = textColor;
 
 			// Output opponent's name for four seconds at race start
-			if (pf::platform_get_time() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
+			if (platform::monotonic_seconds() - gameStartTime < 4.0 && game.opponentsID != NO_OPPONENT)
 			{
 				title = GetOpponentName(game.opponentsID);
 			}
@@ -789,7 +814,7 @@ void RenderText(const double /*fTime*/, const TrackState& track, const GameState
 
 			if (game.raceFinished)
 			{
-				const double currentTime = pf::platform_get_time();
+				const double currentTime = platform::monotonic_seconds();
 				if (gameEndTime == 0.0)
 					gameEndTime = currentTime;
 
@@ -871,19 +896,11 @@ void OnFrameRender(const TrackState& t, const GameModeType GameMode, const doubl
 	RenderText(fTime, g_trackState, g_gameState, GameMode);
 }
 
-void AppHandleKeyDown(const uint32_t nChar)
+void AppHandleKeyDown(const char32_t nChar)
 {
-	switch (nChar)
+	// Track selection keys in TRACK_MENU mode.
+	if (nChar >= '1' && nChar <= '8')
 	{
-	// Track selection keys in TRACK_MENU mode
-	case '1':
-	case '2':
-	case '3':
-	case '4':
-	case '5':
-	case '6':
-	case '7':
-	case '8':
 		if (g_gameMode == TRACK_MENU)
 		{
 			const int32_t track_number = nChar - '1';
@@ -894,94 +911,91 @@ void AppHandleKeyDown(const uint32_t nChar)
 			}
 			CreateTrackVertexBuffer(g_trackState);
 		}
-		break;
+		return;
+	}
 
-	// controls for CarBehaviour, Player 1
-	case pf::platform_key::Left:
+	// Controls for CarBehaviour, Player 1. Key values are platform variables rather
+	// than compile-time VK constants, so compare them instead of using switch labels.
+	if (nChar == platform::keys::LEFT)
+	{
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID - 1;
 			if (newTrack < 0) newTrack = NUM_TRACKS - 1;
-			if (ConvertAmigaTrack(g_trackState, newTrack))
-				CreateTrackVertexBuffer(g_trackState);
+			if (ConvertAmigaTrack(g_trackState, newTrack)) CreateTrackVertexBuffer(g_trackState);
 		}
 		else
+		{
 			lastInput |= KEY_P1_LEFT;
-		break;
-
-	case pf::platform_key::Right:
+		}
+		return;
+	}
+	if (nChar == platform::keys::RIGHT)
+	{
 		if (g_gameMode == TRACK_MENU)
 		{
 			int32_t newTrack = g_trackState.TrackID == NO_TRACK ? 0 : g_trackState.TrackID + 1;
 			if (newTrack >= NUM_TRACKS) newTrack = 0;
-			if (ConvertAmigaTrack(g_trackState, newTrack))
-				CreateTrackVertexBuffer(g_trackState);
+			if (ConvertAmigaTrack(g_trackState, newTrack)) CreateTrackVertexBuffer(g_trackState);
 		}
 		else
+		{
 			lastInput |= KEY_P1_RIGHT;
-		break;
-
-	case pf::platform_key::Control:
+		}
+		return;
+	}
+	if (nChar == platform::keys::CONTROL)
+	{
 		ctrlHeld = true;
-		if (lastInput & KEY_P1_ACCEL)
-			lastInput |= KEY_P1_BOOST;
-		break;
-
-	case pf::platform_key::Up:
-		if (g_gameMode == TRACK_MENU)
-			NextSceneryType();
+		if (lastInput & KEY_P1_ACCEL) lastInput |= KEY_P1_BOOST;
+		return;
+	}
+	if (nChar == platform::keys::UP)
+	{
+		if (g_gameMode == TRACK_MENU) NextSceneryType();
 		else
 		{
 			lastInput |= KEY_P1_ACCEL;
-			if (ctrlHeld)
-				lastInput |= KEY_P1_BOOST;
+			if (ctrlHeld) lastInput |= KEY_P1_BOOST;
 		}
-		break;
-
-	case pf::platform_key::Down:
-		if (g_gameMode == TRACK_MENU)
-			NextSceneryType();
-		else
-			lastInput |= KEY_P1_BRAKE;
-		break;
-
-	case pf::platform_key::Space:
-	case 'S':
-	case 's':
-		if (g_gameMode == GAME_IN_PROGRESS)
-			bOutsideView = !bOutsideView;
-		if (g_gameMode == TRACK_PREVIEW && g_trackState.TrackID != NO_TRACK)
-			StartGame();
-		if (g_gameMode == TRACK_MENU)
-			SelectTrack();
-		break;
+		return;
+	}
+	if (nChar == platform::keys::DOWN)
+	{
+		if (g_gameMode == TRACK_MENU) NextSceneryType();
+		else lastInput |= KEY_P1_BRAKE;
+		return;
+	}
+	if (nChar == platform::keys::SPACE || nChar == 'S' || nChar == 's')
+	{
+		if (g_gameMode == GAME_IN_PROGRESS) bOutsideView = !bOutsideView;
+		if (g_gameMode == TRACK_PREVIEW && g_trackState.TrackID != NO_TRACK) StartGame();
+		if (g_gameMode == TRACK_MENU) SelectTrack();
 	}
 }
 
-void AppHandleKeyUp(const uint32_t nChar)
+void AppHandleKeyUp(const char32_t nChar)
 {
-	switch (nChar)
+	if (nChar == platform::keys::LEFT)
 	{
-	case pf::platform_key::Left:
 		lastInput &= ~KEY_P1_LEFT;
-		break;
-
-	case pf::platform_key::Right:
+	}
+	else if (nChar == platform::keys::RIGHT)
+	{
 		lastInput &= ~KEY_P1_RIGHT;
-		break;
-
-	case pf::platform_key::Control:
+	}
+	else if (nChar == platform::keys::CONTROL)
+	{
 		ctrlHeld = false;
 		lastInput &= ~KEY_P1_BOOST;
-		break;
-
-	case pf::platform_key::Up:
+	}
+	else if (nChar == platform::keys::UP)
+	{
 		lastInput &= ~(KEY_P1_ACCEL | KEY_P1_BOOST);
-		break;
-
-	case pf::platform_key::Down:
+	}
+	else if (nChar == platform::keys::DOWN)
+	{
 		lastInput &= ~KEY_P1_BRAKE;
-		break;
 	}
 }
 
@@ -991,10 +1005,40 @@ void AppResetInput()
 	ctrlHeld = false;
 }
 
-// Sound buffer setup — creates all game sound buffers using platform API
-static pf::sound_buffer_ptr LoadSound(const std::string_view name)
+bool GameIsPaused()
 {
-	return pf::create_sound_buffer(pf::embedded_resource_data(name));
+	return bPaused;
+}
+
+void GameSetInputActive(const bool active)
+{
+	g_gameInputActive = active;
+	if (!active) AppResetInput();
+}
+
+// ui::app exposes key-down and the game owns a realtime loop, so held controls are
+// sampled at the frame boundary instead of relying on a window key-up callback.
+static void RefreshInputFromKeyboard()
+{
+	const auto set_key = [](const char32_t key, const uint32_t bit)
+	{
+		if (platform::is_key_down_async(key)) lastInput |= bit;
+		else lastInput &= ~bit;
+	};
+
+	set_key(platform::keys::LEFT, KEY_P1_LEFT);
+	set_key(platform::keys::RIGHT, KEY_P1_RIGHT);
+	set_key(platform::keys::UP, KEY_P1_ACCEL);
+	set_key(platform::keys::DOWN, KEY_P1_BRAKE);
+	ctrlHeld = platform::is_key_down_async(platform::keys::CONTROL);
+	if (ctrlHeld && (lastInput & KEY_P1_ACCEL)) lastInput |= KEY_P1_BOOST;
+	else lastInput &= ~KEY_P1_BOOST;
+}
+
+// Sound buffer setup — creates all game sound buffers using platform API
+static platform::sound_buffer_ptr LoadSound(const std::string_view name)
+{
+	return platform::create_sound_buffer(platform::embedded_resource_data(name));
 }
 
 bool SetupSoundBuffers(SoundState& s)
@@ -1063,37 +1107,67 @@ void DestroySoundBuffers(SoundState& s)
 		s.EngineSoundBuffers[i].reset();
 }
 
-// Built apart from AppInit so the self-tests can check it without a window.
-std::vector<pf::menu_command> BuildGameMenu()
+// Built apart from AppInit so the self-tests can check it without a window. The menu
+// callbacks are rebuilt when a submenu opens, so enable and checked state never goes stale.
+namespace
 {
-	auto sep = [] { return pf::menu_command{}; };
-
-	auto isMenu = [] { return g_gameMode == TRACK_MENU; };
-	auto isPreview = [] { return g_gameMode == TRACK_PREVIEW; };
-	auto isGame = [] { return g_gameMode == GAME_IN_PROGRESS; };
-	auto isOver = [] { return g_gameMode == GAME_OVER; };
-	auto hasTrack = [] { return g_trackState.TrackID != NO_TRACK; };
-
-	// --- Game menu ---
-	// Start Race keeps a written hint and no accelerator: S is read by
-	// AppHandleKeyDown, and in a race it toggles the camera, which an
-	// accelerator would swallow. The platform appends every bound key itself.
-	pf::menu_command gameMenu;
-	gameMenu.text = "&Game";
-	gameMenu.children = {
+	ui::command_ptr MakeMenuCommand(const std::string_view text, const int id,
+	                                std::function<void()> invoke = {}, const bool enable = true,
+	                                const bool checked = false, const char32_t accelerator = 0,
+	                                const std::string_view displayed_accelerator = {})
+	{
+		auto command = std::make_shared<ui::command>();
+		command->text = text;
+		command->opaque = id;
+		command->invoke = std::move(invoke);
+		command->enable = enable;
+		command->checked = checked;
+		command->checkable = checked;
+		if (accelerator != 0)
 		{
-			"&Start Race\tS", IDM_START_RACE,
+			command->kba.push_back({accelerator, 0});
+			command->keyboard_accelerator_text = displayed_accelerator.empty()
+			                                             ? platform::format_keyboard_accelerator(command->kba)
+			                                             : std::string(displayed_accelerator);
+		}
+		else if (!displayed_accelerator.empty())
+		{
+			command->keyboard_accelerator_text = displayed_accelerator;
+		}
+		return command;
+	}
+
+	ui::command_ptr MakeMenuSeparator()
+	{
+		return std::make_shared<ui::command>();
+	}
+
+	std::vector<ui::command_ptr> BuildGameMenuItems()
+	{
+		const auto isMenu = g_gameMode == TRACK_MENU;
+		const auto isPreview = g_gameMode == TRACK_PREVIEW;
+		const auto isGame = g_gameMode == GAME_IN_PROGRESS;
+		const auto isOver = g_gameMode == GAME_OVER;
+		const auto hasTrack = g_trackState.TrackID != NO_TRACK;
+
+		// --- Game menu ---
+		std::vector<ui::command_ptr> game;
+		// Start Race keeps a written hint and no accelerator: S is read by
+		// AppHandleKeyDown, and in a race it toggles the camera.
+		game.push_back(MakeMenuCommand("&Start Race", IDM_START_RACE,
 			[]
 			{
 				if (g_gameMode == TRACK_MENU && g_trackState.TrackID != NO_TRACK)
+				{
 					SelectTrack();
+				}
 				else if (g_gameMode == TRACK_PREVIEW)
+				{
 					StartGame();
+				}
 			},
-			[=] { return (isMenu() && hasTrack()) || isPreview(); }
-		},
-		{
-			"Back to &Menu", IDM_BACK_TO_MENU,
+			(isMenu && hasTrack) || isPreview, false, 0, "S"));
+		game.push_back(MakeMenuCommand("Back to &Menu", IDM_BACK_TO_MENU,
 			[]
 			{
 				if (g_gameMode != TRACK_MENU)
@@ -1104,28 +1178,14 @@ std::vector<pf::menu_command> BuildGameMenu()
 					bPaused = false;
 				}
 			},
-			[=] { return !isMenu(); },
-			nullptr,
-			pf::key_binding{pf::platform_key::Escape}
-		},
-		sep(),
-		{
-			"&Pause", IDM_PAUSE,
-			[] { bPaused = true; },
-			[=] { return (isGame() || isPreview()) && !bPaused; },
-			nullptr,
-			pf::key_binding{'P'}
-		},
-		{
-			"R&esume", IDM_RESUME,
-			[] { bPaused = false; },
-			[] { return bPaused; },
-			nullptr,
-			pf::key_binding{'O'}
-		},
-		sep(),
-		{
-			"&Reverse Car", IDM_REVERSE_CAR,
+			!isMenu, false, platform::keys::ESCAPE));
+		game.push_back(MakeMenuSeparator());
+		game.push_back(MakeMenuCommand("&Pause", IDM_PAUSE, [] { bPaused = true; },
+		                              (isGame || isPreview) && !bPaused, false, 'P'));
+		game.push_back(MakeMenuCommand("R&esume", IDM_RESUME, [] { bPaused = false; },
+		                              bPaused, false, 'O'));
+		game.push_back(MakeMenuSeparator());
+		game.push_back(MakeMenuCommand("&Reverse Car", IDM_REVERSE_CAR,
 			[]
 			{
 				if (g_gameMode == GAME_IN_PROGRESS)
@@ -1134,31 +1194,22 @@ std::vector<pf::menu_command> BuildGameMenu()
 					g_gameState.INITIALISE_PLAYER = true;
 				}
 			},
-			[=] { return isGame(); },
-			nullptr,
-			pf::key_binding{'R'}
-		},
-		sep(),
-		{
-			"E&xit", IDM_EXIT,
-			[] { GameClose(); }
-		},
-	};
+			isGame, false, 'R'));
+		game.push_back(MakeMenuSeparator());
+		game.push_back(MakeMenuCommand("E&xit", IDM_EXIT, [] { GameClose(); }));
 
-	// --- Track menu ---
-	pf::menu_command trackMenu;
-	trackMenu.text = "&Track";
-	for (int i = 0; i < NUM_TRACKS; i++)
-	{
-		int trackIdx = i;
-		trackMenu.children.push_back(
-			{
-				pf::utf16_to_utf8(GetTrackName(i)), IDM_TRACK_FIRST + i,
-				[trackIdx]
+		// --- Track menu ---
+		std::vector<ui::command_ptr> track;
+		for (int i = 0; i < NUM_TRACKS; ++i)
+		{
+			const auto track_id = i;
+			track.push_back(MakeMenuCommand(
+				core::utf16_to_utf8(std::wstring_view(GetTrackName(i))), IDM_TRACK_FIRST + i,
+				[track_id]
 				{
 					if (g_gameMode == TRACK_MENU)
 					{
-						if (!ConvertAmigaTrack(g_trackState, trackIdx))
+						if (!ConvertAmigaTrack(g_trackState, track_id))
 						{
 							ShowError(L"Failed to convert track", L"Error");
 							return;
@@ -1166,98 +1217,78 @@ std::vector<pf::menu_command> BuildGameMenu()
 						CreateTrackVertexBuffer(g_trackState);
 					}
 				},
-				[=] { return isMenu(); },
-				[trackIdx] { return g_trackState.TrackID == trackIdx; }
-			}
-		);
-	}
+				isMenu, g_trackState.TrackID == track_id));
+		}
 
-	// --- View menu ---
-	pf::menu_command viewMenu;
-	viewMenu.text = "&View";
-	viewMenu.children = {
+		// --- View menu ---
+		std::vector<ui::command_ptr> view;
+		view.push_back(MakeMenuCommand("&Outside Camera", IDM_OUTSIDE_VIEW,
+		                              [] { bOutsideView = !bOutsideView; }, isGame, bOutsideView));
+		view.push_back(MakeMenuCommand("Show S&tats", IDM_SHOW_STATS,
+		                              [] { bShowStats = !bShowStats; }, true, bShowStats, platform::keys::F5));
+		view.push_back(MakeMenuSeparator());
+		static constexpr std::string_view scenery_names[] = {
+			"Scenery &1"sv, "Scenery &2"sv, "Scenery &3"sv, "Scenery &4"sv, "Scenery &5"sv
+		};
+		for (int i = 0; i < 5; ++i)
 		{
-			"&Outside Camera", IDM_OUTSIDE_VIEW,
-			[] { bOutsideView = !bOutsideView; },
-			[=] { return isGame(); },
-			[] { return bOutsideView; }
-		},
+			const auto scenery = i;
+			view.push_back(MakeMenuCommand(scenery_names[i], IDM_SCENERY_FIRST + i,
+			                              [scenery] { SetSceneryType(scenery); }, true,
+			                              GetSceneryType() == scenery));
+		}
+
+		// --- Speed menu ---
+		std::vector<ui::command_ptr> speed;
+		speed.push_back(MakeMenuCommand("&Increase Speed", IDM_SPEED_INCREASE,
+		                              [] { if (frameGap > 1) --frameGap; }, frameGap > 1, false,
+		                              platform::keys::F9));
+		speed.push_back(MakeMenuCommand("&Decrease Speed", IDM_SPEED_DECREASE,
+		                              [] { ++frameGap; }, true, false, platform::keys::F10));
+
+		// --- Debug menu ---
+		std::vector<ui::command_ptr> debug;
+		debug.push_back(MakeMenuCommand("Pause &Player", IDM_PAUSE_PLAYER,
+		                              [] { bPlayerPaused = !bPlayerPaused; }, true, bPlayerPaused,
+		                              platform::keys::F6));
+		debug.push_back(MakeMenuCommand("Pause &Opponent", IDM_PAUSE_OPPONENT,
+		                              [] { bOpponentPaused = !bOpponentPaused; }, true, bOpponentPaused,
+		                              platform::keys::F7));
+		debug.push_back(MakeMenuSeparator());
+		// A restart is a new race on the same track: lap count, boost and the
+		// finish banner go back to their starting values along with the cars.
+		debug.push_back(MakeMenuCommand("&Restart Race", IDM_RESTART_RACE, [] { StartGame(); },
+		                              isGame || isOver, false, 'Z'));
+
+		std::vector<ui::command_ptr> menus;
+		const auto make_menu = [](const std::string_view text, std::vector<ui::command_ptr> items)
 		{
-			"Show S&tats", IDM_SHOW_STATS,
-			[] { bShowStats = !bShowStats; },
-			nullptr,
-			[] { return bShowStats; },
-			pf::key_binding{pf::platform_key::F5}
-		},
-		sep(),
-	};
-	static std::string_view sceneryNames[] = {
-		"Scenery &1"sv, "Scenery &2"sv, "Scenery &3"sv, "Scenery &4"sv, "Scenery &5"sv
-	};
-	for (int i = 0; i < 5; i++)
+			auto menu = std::make_shared<ui::command>();
+			menu->text = text;
+			menu->menu = [items = std::move(items)] { return items; };
+			return menu;
+		};
+		menus.push_back(make_menu("&Game", std::move(game)));
+		menus.push_back(make_menu("&Track", std::move(track)));
+		menus.push_back(make_menu("&View", std::move(view)));
+		menus.push_back(make_menu("S&peed", std::move(speed)));
+		menus.push_back(make_menu("&Debug", std::move(debug)));
+		return menus;
+	}
+}
+
+std::vector<ui::command_ptr> BuildGameMenu()
+{
+	auto menus = BuildGameMenuItems();
+	for (size_t index = 0; index < menus.size(); ++index)
 	{
-		int idx = i;
-		viewMenu.children.push_back(
-			{
-				std::string(sceneryNames[i]), IDM_SCENERY_FIRST + i,
-				[idx] { SetSceneryType(idx); },
-				nullptr,
-				[idx] { return GetSceneryType() == idx; }
-			}
-		);
+		menus[index]->menu = [index]
+		{
+			const auto current = BuildGameMenuItems();
+			return current[index]->menu ? current[index]->menu() : std::vector<ui::command_ptr>{};
+		};
 	}
-
-	// --- Speed menu ---
-	pf::menu_command speedMenu;
-	speedMenu.text = "S&peed";
-	speedMenu.children = {
-		{
-			"&Increase Speed", IDM_SPEED_INCREASE,
-			[] { if (frameGap > 1) frameGap--; },
-			[] { return frameGap > 1; },
-			nullptr,
-			pf::key_binding{pf::platform_key::F9}
-		},
-		{
-			"&Decrease Speed", IDM_SPEED_DECREASE,
-			[] { frameGap++; },
-			nullptr,
-			nullptr,
-			pf::key_binding{pf::platform_key::F10}
-		},
-	};
-
-	// --- Debug menu ---
-	pf::menu_command debugMenu;
-	debugMenu.text = "&Debug";
-	debugMenu.children = {
-		{
-			"Pause &Player", IDM_PAUSE_PLAYER,
-			[] { bPlayerPaused = !bPlayerPaused; },
-			nullptr,
-			[] { return bPlayerPaused; },
-			pf::key_binding{pf::platform_key::F6}
-		},
-		{
-			"Pause &Opponent", IDM_PAUSE_OPPONENT,
-			[] { bOpponentPaused = !bOpponentPaused; },
-			nullptr,
-			[] { return bOpponentPaused; },
-			pf::key_binding{pf::platform_key::F7}
-		},
-		sep(),
-		{
-			// A restart is a new race on the same track: lap count, boost and the
-			// finish banner go back to their starting values along with the cars.
-			"&Restart Race", IDM_RESTART_RACE,
-			[] { StartGame(); },
-			[=] { return isGame() || isOver(); },
-			nullptr,
-			pf::key_binding{'Z'}
-		},
-	};
-
-	return {gameMenu, trackMenu, viewMenu, speedMenu, debugMenu};
+	return menus;
 }
 
 bool AppInit()
@@ -1268,7 +1299,6 @@ bool AppInit()
 		return false;
 	}
 
-	GameSetMenu(BuildGameMenu());
 
 	// Perform application initialization
 	InitialiseData(g_trackState);
@@ -1279,7 +1309,7 @@ bool AppInit()
 	// Without a usable audio device the game runs silent and its title says so.
 	// A modal warning here stopped start-up before the window existed; on a
 	// machine with no sound, such as a CI runner, the box was all there was.
-	g_soundAvailable = pf::sound_init() && SetupSoundBuffers(g_soundState);
+	g_soundAvailable = platform::sound_init() && SetupSoundBuffers(g_soundState);
 	return true;
 }
 
@@ -1293,18 +1323,22 @@ void AppIdleMinimized()
 
 void AppRun()
 {
-	double previousTime = pf::platform_get_time();
+	double previousTime = platform::monotonic_seconds();
 	double simulationAccumulator = 0.0;
 
-	while (pf::platform_events())
+	while (platform::pump_events())
 	{
 		if (GameIsMinimized())
 		{
 			AppIdleMinimized();
-			pf::platform_sleep(50);
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			continue;
 		}
-		const double fTime = pf::platform_get_time();
+		if (g_gameInputActive)
+			RefreshInputFromKeyboard();
+		else
+			AppResetInput();
+		const double fTime = platform::monotonic_seconds();
 		const double elapsed = std::clamp(fTime - previousTime, 0.0, 0.25);
 		previousTime = fTime;
 		simulationAccumulator += elapsed;
@@ -1329,7 +1363,7 @@ void AppRun()
 		g_renderer.DrawGameText(g_renderer.GetWidth() - 8 - static_cast<int>(fpsText.size()) * 8, 4,
 		                        fpsText, XRGB(255, 255, 0));
 
-		GamePresent(g_renderer.GetPixels(), g_renderer.GetWidth(), g_renderer.GetHeight());
+		GamePresent();
 
 		// FPS tracking
 		g_fpsFrameCount++;
@@ -1341,12 +1375,13 @@ void AppRun()
 		}
 
 		// Simple frame rate limiter (~60 fps)
-		pf::platform_sleep(1);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 
 	// Cleanup
 	FreeResources();
 	FreeData(g_soundState, g_trackState);
+	platform::sound_shutdown();
 }
 
 void AppHandleFrameSize(const int cx, const int cy)

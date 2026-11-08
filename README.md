@@ -24,10 +24,10 @@ acceleration:
   shading with one directional light
 - Affine 2D primitives for the HUD and text
 
-The finished RGBA framebuffer is blitted to the window by the platform layer's
-`present_pixels`, outside any paint handler, so the game keeps control of its
-frame loop. Audio is XAudio2 through `pf::sound_buffer`; without a usable audio
-device the game runs silent and its title says "(no sound)".
+The finished framebuffer is a `core::surface` uploaded by the UI content element
+and redrawn each frame, so the game keeps control of its realtime loop while
+libdesktop owns the window. Audio uses `platform::sound_buffer`; without a
+usable audio device the game runs silent and its title says "(no sound)".
 
 All game data — tracks, sounds and textures — is compiled into the executable.
 
@@ -67,7 +67,7 @@ present.
 
 Game text uses standard wide formatting with explicit string specifiers, and
 the headless suite checks formatting failures as well as the physics and
-platform-reactor behavior. Windowing and audio remain libdesktop's responsibility.
+menu and pause behavior. Windowing and audio remain libdesktop's responsibility.
 
 ## Documentation
 

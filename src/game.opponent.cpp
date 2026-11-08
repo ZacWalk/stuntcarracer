@@ -1,7 +1,6 @@
 // Opponent.cpp — Opponent AI movement, pre-recorded speed playback,
 // car-to-car collision detection, and race position tracking.
 
-#include "platform.h"
 #include "game.h"
 
 #include <algorithm>

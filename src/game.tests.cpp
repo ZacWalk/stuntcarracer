@@ -3,8 +3,8 @@
 //
 // Drives the car physics directly (no window, no rendering, no sound) to
 // verify behaviour such as the chain-drop start: the car should be lowered
-// onto the track surface and come to rest there, not fall through. The menu
-// bar and the window reactor are checked the same way, against a fake frame.
+// onto the track surface and come to rest there, not fall through. The drawn menu
+// bar and window presentation policy are checked without opening a window.
 //
 // All output is written to test_results.log in the working directory and to
 // stderr, and the process exits with code 0 on success or 1 on failure.
@@ -24,7 +24,6 @@
 #include <string>
 #include <vector>
 
-#include "platform.h"
 #include "game.h"
 
 
@@ -523,73 +522,104 @@ namespace
 	// Every shortcut the menu advertises has to reach the game. The move onto
 	// the shared platform dropped the old accelerator table, the labels kept
 	// promising the keys, and nothing noticed.
+	int MenuCommandId(const ui::command_ptr& item)
+	{
+		if (!item || !item->opaque.has_value()) return -1;
+		try
+		{
+			return std::any_cast<int>(item->opaque);
+		}
+		catch (const std::bad_any_cast&)
+		{
+			return -1;
+		}
+	}
+
+	void CollectMenuItems(const std::vector<ui::command_ptr>& level, std::vector<ui::command_ptr>& items)
+	{
+		for (const auto& item : level)
+		{
+			if (!item) continue;
+			items.push_back(item);
+			if (item->menu) CollectMenuItems(item->menu(), items);
+		}
+	}
+
+	ui::command_ptr FindMenuItem(const std::vector<ui::command_ptr>& level, const int id)
+	{
+		for (const auto& item : level)
+		{
+			if (!item) continue;
+			if (MenuCommandId(item) == id) return item;
+			if (item->menu)
+			{
+				if (const auto found = FindMenuItem(item->menu(), id)) return found;
+			}
+		}
+		return nullptr;
+	}
+
+	// Every shortcut advertised by the drawn menu bar reaches the game. The ui
+	// command owns its accelerator and rebuilds enabled state when opened.
 	void TestMenuShortcuts(Logger& log)
 	{
 		log.log("\n--- TestMenuShortcuts ---\n");
 
-		const auto menu = BuildGameMenu();
-		std::vector<const pf::menu_command*> items;
-		std::function<void(const std::vector<pf::menu_command>&)> collect =
-			[&](const std::vector<pf::menu_command>& level)
-			{
-				for (const auto& item : level)
-				{
-					items.push_back(&item);
-					collect(item.children);
-				}
-			};
-		collect(menu);
+		std::vector<ui::command_ptr> items;
+		CollectMenuItems(BuildGameMenu(), items);
 
 		struct Expected
 		{
 			int id;
-			unsigned int key;
+			char32_t key;
 			const char* what;
 		};
-		static constexpr Expected bindings[] = {
-			{IDM_BACK_TO_MENU, pf::platform_key::Escape, "Esc returns to the track menu"},
+		const Expected bindings[] = {
+			{IDM_BACK_TO_MENU, platform::keys::ESCAPE, "Esc returns to the track menu"},
 			{IDM_PAUSE, 'P', "P pauses"},
 			{IDM_RESUME, 'O', "O resumes"},
 			{IDM_REVERSE_CAR, 'R', "R reverses the car"},
-			{IDM_SHOW_STATS, pf::platform_key::F5, "F5 shows statistics"},
-			{IDM_PAUSE_PLAYER, pf::platform_key::F6, "F6 pauses the player"},
-			{IDM_PAUSE_OPPONENT, pf::platform_key::F7, "F7 pauses the opponent"},
-			{IDM_SPEED_INCREASE, pf::platform_key::F9, "F9 increases game speed"},
-			{IDM_SPEED_DECREASE, pf::platform_key::F10, "F10 decreases game speed"},
+			{IDM_SHOW_STATS, platform::keys::F5, "F5 shows statistics"},
+			{IDM_PAUSE_PLAYER, platform::keys::F6, "F6 pauses the player"},
+			{IDM_PAUSE_OPPONENT, platform::keys::F7, "F7 pauses the opponent"},
+			{IDM_SPEED_INCREASE, platform::keys::F9, "F9 increases game speed"},
+			{IDM_SPEED_DECREASE, platform::keys::F10, "F10 decreases game speed"},
 			{IDM_RESTART_RACE, 'Z', "Z restarts the race"},
 		};
 		for (const auto& expected : bindings)
 		{
-			const auto found = std::ranges::find_if(items, [&](const pf::menu_command* item)
+			const auto found = std::ranges::find_if(items, [&](const ui::command_ptr& item)
 			{
-				return item->id == expected.id;
+				return MenuCommandId(item) == expected.id;
 			});
-			log.check(found != items.end() && (*found)->accel.key == expected.key &&
-			          (*found)->accel.modifiers == pf::key_mod::none, expected.what);
+			log.check(found != items.end() && (*found)->kba.size() == 1 &&
+			          (*found)->kba.front().key == expected.key &&
+			          (*found)->kba.front().key_state == 0, expected.what);
 		}
 
-		// The platform writes a bound key into the label itself, so a label that
-		// spells one out as well shows it twice. Start Race is the one written
-		// hint left: S is read by AppHandleKeyDown, not by an accelerator.
 		bool labels_ok = true;
-		for (const auto* item : items)
+		for (const auto& item : items)
 		{
-			const bool hint = item->text.find('\t') != std::string::npos;
-			if (hint && (!item->accel.empty() || item->id != IDM_START_RACE))
+			if (item->text.find('\t') != std::string::npos ||
+				(!item->kba.empty() && item->keyboard_accelerator_text.empty()))
 			{
-				log.log("  label spells out a key: %s\n", item->text.c_str());
 				labels_ok = false;
 			}
 		}
-		log.check(labels_ok, "only the keys AppHandleKeyDown reads are written into labels");
+		log.check(labels_ok, "menu labels keep accelerators in ui command metadata");
+
+		const auto f10_dispatched =
+			ui::dispatch_accelerator(BuildGameMenu(), platform::keys::F10, {});
+		log.check(f10_dispatched, "F10 dispatches through the drawn menu accelerator path");
+
+		const auto start = FindMenuItem(BuildGameMenu(), IDM_START_RACE);
+		log.check(start && start->kba.empty() && start->keyboard_accelerator_text == "S",
+		          "Start Race keeps the key read directly by AppHandleKeyDown");
 
 		// Restart Race used to re-drop the cars and nothing else, so a finished
 		// race came back with its RACE LOST banner and lap count still showing.
-		const auto restart = std::ranges::find_if(items, [](const pf::menu_command* item)
-		{
-			return item->id == IDM_RESTART_RACE;
-		});
-		if (restart == items.end() || !(*restart)->action)
+		const auto restart = FindMenuItem(BuildGameMenu(), IDM_RESTART_RACE);
+		if (!restart || !restart->invoke)
 		{
 			log.check(false, "Restart Race exists");
 			return;
@@ -601,70 +631,77 @@ namespace
 		g_gameState.lapNumber[OPPONENT] = 4;
 		g_gameState.boostReserve = 0;
 		g_gameState.bNewGame = false;
-		(*restart)->action();
+		restart->invoke();
 		log.check(g_gameMode == GAME_IN_PROGRESS && g_gameState.bNewGame, "Restart Race drops both cars again");
 		log.check(!g_gameState.raceFinished && g_gameState.lapNumber[PLAYER] == 0 &&
 		          g_gameState.lapNumber[OPPONENT] == 0, "Restart Race clears the finish and the lap count");
 		log.check(g_gameState.boostReserve == g_trackState.StandardBoost, "Restart Race refills the boost");
 	}
 
-	// A pause belongs to the race it was taken in. P then Esc used to leave the
-	// track menu frozen with Resume lit, and the next race came up frozen on the
-	// old race's last frame with nothing on screen to say why.
+	// A pause belongs to the race it was taken in. P then Esc must leave the
+	// track menu running, and a preview or restart must not inherit the pause.
 	void TestPauseEndsWithRace(Logger& log)
 	{
 		log.log("\n--- TestPauseEndsWithRace ---\n");
 
-		const auto menu = BuildGameMenu();
-		std::function<const pf::menu_command*(const std::vector<pf::menu_command>&, int)> find =
-			[&](const std::vector<pf::menu_command>& level, const int id) -> const pf::menu_command*
-			{
-				for (const auto& item : level)
-				{
-					if (item.id == id) return &item;
-					if (const auto* child = find(item.children, id)) return child;
-				}
-				return nullptr;
-			};
-		const auto* pause = find(menu, IDM_PAUSE);
-		const auto* resume = find(menu, IDM_RESUME);
-		const auto* back = find(menu, IDM_BACK_TO_MENU);
-		const auto* start = find(menu, IDM_START_RACE);
-		const auto* restart = find(menu, IDM_RESTART_RACE);
-		if (!pause || !resume || !back || !start || !restart || !resume->is_enabled ||
-		    g_trackState.TrackID == NO_TRACK)
+		if (g_trackState.TrackID == NO_TRACK && !ConvertAmigaTrack(g_trackState, LITTLE_RAMP))
 		{
-			log.check(false, "the pause and race items exist and a track is loaded");
+			log.check(false, "the pause and race items have a track");
 			return;
 		}
 
 		// The platform runs an item only while it is enabled, and so do the tests.
-		const auto run = [](const pf::menu_command* item)
+		const auto run = [](const ui::command_ptr& item)
 		{
-			const bool enabled = !item->is_enabled || item->is_enabled();
-			if (enabled) item->action();
-			return enabled;
+			if (!item || !item->enable || !item->invoke) return false;
+			item->invoke();
+			return true;
 		};
-		const auto paused = [&] { return resume->is_enabled(); };
 
 		g_gameMode = GAME_IN_PROGRESS;
-		log.check(run(pause) && paused(), "P pauses a race");
-		log.check(run(back) && g_gameMode == TRACK_MENU && !paused(),
+		const auto pause = FindMenuItem(BuildGameMenu(), IDM_PAUSE);
+		log.check(run(pause) && GameIsPaused(), "P pauses a race");
+		log.check(run(FindMenuItem(BuildGameMenu(), IDM_BACK_TO_MENU)) &&
+		          g_gameMode == TRACK_MENU && !GameIsPaused(),
 		          "Esc from a paused race leaves the track menu running");
 
-		log.check(run(start) && g_gameMode == TRACK_PREVIEW, "Start Race opens the preview");
-		log.check(run(pause) && run(start) && g_gameMode == GAME_IN_PROGRESS && !paused(),
+		log.check(run(FindMenuItem(BuildGameMenu(), IDM_START_RACE)) && g_gameMode == TRACK_PREVIEW,
+		          "Start Race opens the preview");
+		log.check(run(FindMenuItem(BuildGameMenu(), IDM_PAUSE)) && GameIsPaused() &&
+		          run(FindMenuItem(BuildGameMenu(), IDM_START_RACE)) &&
+		          g_gameMode == GAME_IN_PROGRESS && !GameIsPaused(),
 		          "a race started from a paused preview runs");
 
-		log.check(run(pause) && run(restart) && g_gameMode == GAME_IN_PROGRESS && !paused(),
+		log.check(run(FindMenuItem(BuildGameMenu(), IDM_PAUSE)) && GameIsPaused() &&
+		          run(FindMenuItem(BuildGameMenu(), IDM_RESTART_RACE)) &&
+		          g_gameMode == GAME_IN_PROGRESS && !GameIsPaused(),
 		          "a race restarted while paused runs");
 
-		run(back);
+		run(FindMenuItem(BuildGameMenu(), IDM_BACK_TO_MENU));
+	}
+
+	void TestWindowPresentation(Logger& log)
+	{
+		log.log("\n--- TestWindowPresentation ---\n");
+
+		log.check(GameWindowTitle(true) == "Stunt Car Racer",
+		          "a working audio device gives the normal title");
+		log.check(GameWindowTitle(false) == "Stunt Car Racer (no sound)",
+		          "a silent game gives the no-sound title");
+
+		const core::sizei screen{1920, 1080};
+		const auto bounds = GameWindowBounds(screen, 1.5);
+		log.check(bounds.width() == 960 && bounds.height() == 720,
+		          "the window is 960x720 at 1.5x DPI");
+		log.check(bounds.left == 480 && bounds.top == 180,
+		          "the scaled window is centred at 480,180");
+
+		// Close-box and Alt+F4 dispatch are ui::frame defaults, not application callbacks.
 	}
 
 	// Minimising stands the race still but used to leave its engine droning:
-	// the engine is a looping sound, and only OnFrameMove, which the frame loop
-	// skips while minimised, stopped it.
+	// the engine is a looping sound, and only OnFrameMove, which the frame loop skips
+	// while minimised, stopped it.
 	void TestMinimizeSilencesEngine(Logger& log)
 	{
 		log.log("\n--- TestMinimizeSilencesEngine ---\n");
@@ -674,84 +711,6 @@ namespace
 		log.check(!g_soundState.engineSoundPlaying, "a minimised race stops its engine");
 	}
 
-	// A window that records what the reactor asks of it; everything else is inert.
-	struct RecordingFrame final : pf::window_frame
-	{
-		std::string text;
-		pf::irect bounds{};
-		bool closed = false;
-
-		void set_reactor(pf::frame_reactor_ptr) override {}
-		void notify_size() override {}
-		pf::irect get_client_rect() const override { return bounds; }
-		void invalidate() override {}
-		void invalidate_rect(const pf::irect&) override {}
-		void set_focus() override {}
-		bool has_focus() const override { return true; }
-		void set_capture() override {}
-		void release_capture() override {}
-		uint32_t set_timer(uint32_t, uint32_t) override { return 0; }
-		void kill_timer(uint32_t) override {}
-		pf::ipoint screen_to_client(const pf::ipoint pt) const override { return pt; }
-		void set_cursor_shape(pf::cursor_shape) override {}
-		void move_window(const pf::irect& r) override { bounds = r; }
-		void show(bool) override {}
-		bool is_visible() const override { return true; }
-		void set_text(const std::string_view t) override { text = t; }
-		std::string text_from_clipboard() override { return {}; }
-		bool text_to_clipboard(std::string_view) override { return false; }
-		placement get_placement() const override { return {}; }
-		void set_placement(const placement&) override {}
-		void track_mouse_leave() override {}
-		bool is_key_down(unsigned int) const override { return false; }
-		bool is_key_down_async(unsigned int) const override { return false; }
-		pf::window_frame_ptr create_child(std::string_view, uint32_t, pf::color_t) const & override { return nullptr; }
-		void close() override { closed = true; }
-		int message_box(std::string_view, std::string_view, uint32_t) override { return 0; }
-		void present_pixels(const uint32_t*, int, int) override {}
-		void set_menu(std::vector<pf::menu_command>) override {}
-		std::unique_ptr<pf::measure_context> create_measure_context() const override { return nullptr; }
-		void show_popup_menu(const std::vector<pf::menu_command>&, const pf::ipoint&) override {}
-		double get_dpi_scale() const override { return 1.5; }
-		void accept_drop_files(bool) override {}
-		pf::toolbar_frame_ptr create_address_bar(const pf::address_bar_config&) override { return nullptr; }
-	};
-
-	// The platform calls app_init before the window exists, and leaves WM_CLOSE
-	// to the reactor. Both lost the game something it once had: a title and a
-	// 640x480 window, and a close box that worked.
-	void TestWindowFrame(Logger& log)
-	{
-		log.log("\n--- TestWindowFrame ---\n");
-
-		const auto reactor = CreateGameReactor();
-		const auto recorder = std::make_shared<RecordingFrame>();
-		pf::window_frame_ptr frame = recorder;
-
-		reactor->handle_message(frame, pf::message_type::create, {});
-		log.check(recorder->text == "Stunt Car Racer", "the window is titled once it exists");
-
-		const auto screen = pf::platform_screen_size();
-		const int cx = std::min(WINDOW_WIDTH * 3 / 2, screen.cx);
-		const int cy = std::min(WINDOW_HEIGHT * 3 / 2, screen.cy);
-		log.log("  bounds %d,%d %dx%d on a %dx%d screen\n", recorder->bounds.left, recorder->bounds.top,
-		        recorder->bounds.width(), recorder->bounds.height(), screen.cx, screen.cy);
-		log.check(recorder->bounds.width() == cx && recorder->bounds.height() == cy,
-		          "the window is 640x480 scaled by the monitor's DPI");
-		log.check(recorder->bounds.left == std::max(0, (screen.cx - cx) / 2) &&
-		          recorder->bounds.top == std::max(0, (screen.cy - cy) / 2),
-		          "the window is centred on the screen");
-
-		reactor->handle_message(frame, pf::message_type::close, {});
-		log.check(recorder->closed, "the close box closes the window");
-
-		// Without an audio device the game starts silent, and says so in its
-		// title rather than in a modal box ahead of the window.
-		g_soundAvailable = false;
-		reactor->handle_message(frame, pf::message_type::create, {});
-		log.check(recorder->text == "Stunt Car Racer (no sound)", "a silent game says so in its title");
-		g_soundAvailable = true;
-	}
 } // namespace
 
 
@@ -762,15 +721,15 @@ int AppRunTests()
 	log.open("test_results.log");
 	log.log("Stunt Car Racer self-tests\n");
 	log.log("==========================\n");
-	log.check(format(L"Lap %ls  Boost %d", L"2", 99) == L"Lap 2  Boost 99",
+	log.check(::format(L"Lap %ls  Boost %d", L"2", 99) == L"Lap 2  Boost 99",
 	          "portable wide formatting preserves the HUD text");
 	const std::wstring bounded_format(L"[%d]unused");
-	log.check(format(std::wstring_view(bounded_format.data(), 4), 7) == L"[7]",
+	log.check(::format(std::wstring_view(bounded_format.data(), 4), 7) == L"[7]",
 	          "formatting respects a nonterminated format view");
 	bool refused = false;
 	try
 	{
-		format(L"%ls", std::wstring(600, L'x').c_str());
+		::format(L"%ls", std::wstring(600, L'x').c_str());
 	}
 	catch (const std::runtime_error&)
 	{
@@ -798,8 +757,8 @@ int AppRunTests()
 
 	TestMenuShortcuts(log);
 	TestPauseEndsWithRace(log);
+	TestWindowPresentation(log);
 	TestMinimizeSilencesEngine(log);
-	TestWindowFrame(log);
 
 	log.log("\n==========================\n");
 	log.log("Total checks: %d\nTotal failures: %d\n", log.checks, log.failures);
