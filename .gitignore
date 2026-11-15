@@ -14,3 +14,4 @@ debug.txt
 test_results.log
 
 /.dd/state/
+/tmp/

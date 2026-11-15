@@ -4,8 +4,7 @@
 
 #include "game.h"
 
-#include "render.software.h"
-
+#include "render.scene.h"
 
 // ---------------------------------------------------------------------------
 // Per-piece track arrays (populated by ReadAmigaTrackData)
@@ -34,6 +33,7 @@ static int16_t Right_Overall_Y_Shift[MAX_PIECES_PER_TRACK];
 // ---------------------------------------------------------------------------
 // Y co-ordinate data for piece templates (B = bytes, W = words)
 // ---------------------------------------------------------------------------
+// clang-format off
 static uint8_t B1037[] =
 {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -816,11 +816,13 @@ static struct AMIGA_PIECE_Y
 	{B2382, false, sizeof(B2382)},
 	{B2392, false, sizeof(B2392)}
 };
+// clang-format on
 
 // ---------------------------------------------------------------------------
 // Piece template XZ data (Amiga format, converted at startup)
 // ---------------------------------------------------------------------------
 
+// clang-format off
 // Straight 8-segment
 static uint8_t Amiga_Piece0_XZ[9 * 8] =
 {
@@ -928,7 +930,7 @@ static uint8_t Amiga_Piece10_XZ[12 * 8] =
 	0xbe, 0x06, 0xcd, 0x07, 0xcd, 0x07, 0xbe, 0x06,
 	0x78, 0x07, 0x87, 0x08, 0x87, 0x08, 0x78, 0x07
 };
-
+// clang-format on
 
 // piece XZs after conversion from Amiga
 static COORD_XZ Piece0_XZ[9 * 2];
@@ -940,6 +942,7 @@ static COORD_XZ Piece7_XZ[10 * 2];
 static COORD_XZ Piece10_XZ[12 * 2];
 
 // only 0,1,3,4,6,7,10 used below
+// clang-format off
 static struct PIECE_TEMPLATE
 {
 	int32_t numSegments;
@@ -964,12 +967,12 @@ static struct PIECE_TEMPLATE
 	{0, false, 0x00, 0, 0x00, nullptr},
 	{11, false, 0x40, 124, 0x20, Piece10_XZ}
 };
+// clang-format on
 
 // piece Ys after conversion from Amiga
 // (could allocate memory individually, as some have less than MAX_Y_COORDS_PER_PIECE,
 //  but this wouldn't save much memory and would have to free it before exit)
 static COORD_Y Piece_Y[NUM_AMIGA_PIECE_Y][MAX_Y_COORDS_PER_PIECE];
-
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -977,21 +980,14 @@ static COORD_Y Piece_Y[NUM_AMIGA_PIECE_Y][MAX_Y_COORDS_PER_PIECE];
 
 static void ConvertAmigaPieceData(void);
 
-static COORD_XZ GetRotatedPieceXZ(COORD_XZ coord,
-                                  int32_t roughAngle);
+static COORD_XZ GetRotatedPieceXZ(COORD_XZ coord, int32_t roughAngle);
 
-static void ConvertAmigaPieceXZ(const uint8_t* amiga,
-                                COORD_XZ* dest,
-                                int32_t size);
+static void ConvertAmigaPieceXZ(const uint8_t* amiga, COORD_XZ* dest, int32_t size);
 
-static void ConvertAmigaPieceY(const AMIGA_PIECE_Y* amiga,
-                               COORD_Y* dest);
+static void ConvertAmigaPieceY(const AMIGA_PIECE_Y* amiga, COORD_Y* dest);
 
-static void UpdateDrawBridgeYCoords(const TrackState& t, int32_t piece,
-                                    int32_t firstCoord,
-                                    int32_t lastCoord,
-                                    int32_t firstYIndex,
-                                    int32_t direction);
+static void UpdateDrawBridgeYCoords(const TrackState& t, int32_t piece, int32_t firstCoord, int32_t lastCoord,
+                                    int32_t firstYIndex, int32_t direction);
 
 static int32_t ReadAmigaTrackData(TrackState& t, int32_t track);
 
@@ -1001,6 +997,7 @@ static int32_t ReadAmigaTrackData(TrackState& t, int32_t track);
 
 wchar_t* GetTrackName(const int32_t track)
 {
+	// clang-format off
 	static wchar_t trackNames[][32] =
 	{
 		L"Little Ramp",
@@ -1012,6 +1009,7 @@ wchar_t* GetTrackName(const int32_t track)
 		L"High Jump",
 		L"Roller Coaster"
 	};
+	// clang-format on
 
 	return trackNames[track];
 }
@@ -1020,7 +1018,6 @@ char GetPieceAngleAndTemplate(const int32_t piece)
 {
 	return Piece_Angle_And_Template[piece];
 }
-
 
 int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 {
@@ -1032,8 +1029,7 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		first_time = false;
 	}
 
-	if (t.TrackID != NO_TRACK)
-		FreeTrackData(t);
+	if (t.TrackID != NO_TRACK) FreeTrackData(t);
 
 	// set the required track
 	if (!ReadAmigaTrackData(t, track))
@@ -1047,8 +1043,7 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 
 	// clear the Track Map
 	for (int32_t x = 0; x < NUM_TRACK_CUBES; x++)
-		for (int32_t z = 0; z < NUM_TRACK_CUBES; z++)
-			t.Track_Map[x][z] = -1;
+		for (int32_t z = 0; z < NUM_TRACK_CUBES; z++) t.Track_Map[x][z] = -1;
 
 	// convert each piece of track in turn
 	int32_t firstSegment = 0;
@@ -1062,10 +1057,8 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		t.Track[piece].y = 0;
 		t.Track[piece].z = z;
 
-
 		// record piece within Track Map
 		t.Track_Map[x][z] = piece;
-
 
 		// get piece template information
 		const char tc = Piece_Angle_And_Template[piece];
@@ -1080,7 +1073,6 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		t.Track[piece].lengthReduction = Piece_Templates[templateNum].lengthReduction;
 		t.Track[piece].steeringAmount = Piece_Templates[templateNum].steeringAmount;
 
-
 		// store number of segments
 		const int32_t numSegments = Piece_Templates[templateNum].numSegments;
 
@@ -1088,10 +1080,8 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 		t.Track[piece].firstSegment = firstSegment;
 		firstSegment += numSegments;
 
-
 		// store initial road lines colour
 		t.Track[piece].initialColour = (static_cast<int32_t>(Right_Y_Coordinate_ID[piece]) & 0x80) >> 7;
-
 
 		// decide road/side surface colours
 		uint8_t roadColour, sidesColour;
@@ -1105,7 +1095,6 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 			roadColour = SCR_BASE_COLOUR + 1;
 			sidesColour = SCR_BASE_COLOUR + 15;
 		}
-
 
 		// allocate memory for unrotated co-ordinates
 		const int32_t size = sizeof(COORD_3D) * (numSegments + 1) * 4;
@@ -1158,7 +1147,6 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 			j += step;
 		}
 
-
 		// store piece y using IDs and overall shifts
 		const int32_t leftID = static_cast<int32_t>(Left_Y_Coordinate_ID[piece]) & 0x7f;
 		const int32_t rightID = static_cast<int32_t>(Right_Y_Coordinate_ID[piece]) & 0x7f;
@@ -1182,7 +1170,6 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 			t.Track[piece].coords[i * 4 + 3].y = TRACK_BOTTOM_Y;
 		}
 
-
 		// set road/side surface colours
 		t.Track[piece].sidesColour = sidesColour;
 
@@ -1192,14 +1179,11 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 			const double y2 = t.Track[piece].coords[i * 4 + 1].y - t.Track[piece].coords[(i + 1) * 4 + 1].y;
 			const double y = abs(y1) > abs(y2) ? y1 : y2;
 
-			if (abs(y) >= 640 * PC_FACTOR)
-				t.Track[piece].roadColour[i] = SCR_BASE_COLOUR + 0;
-			else
-				t.Track[piece].roadColour[i] = roadColour;
+			if (abs(y) >= 640 * PC_FACTOR) t.Track[piece].roadColour[i] = SCR_BASE_COLOUR + 0;
+			else t.Track[piece].roadColour[i] = roadColour;
 		}
 	}
 	t.NumTrackSegments = firstSegment;
-
 
 	// ensure pieces join up perfectly by copying start co-ordinates of
 	// current piece to end co-ordinates of previous piece
@@ -1228,8 +1212,7 @@ int32_t ConvertAmigaTrack(TrackState& t, const int32_t track)
 	return true;
 }
 
-static COORD_XZ GetRotatedPieceXZ(const COORD_XZ coord,
-                                  const int32_t roughAngle)
+static COORD_XZ GetRotatedPieceXZ(const COORD_XZ coord, const int32_t roughAngle)
 {
 	switch (roughAngle)
 	{
@@ -1245,8 +1228,7 @@ static COORD_XZ GetRotatedPieceXZ(const COORD_XZ coord,
 	case 0xc0: // 270 degrees clockwise
 		return {0x800 - coord.z, coord.x};
 
-	default:
-		return {coord.x, coord.z};
+	default: return {coord.x, coord.z};
 	}
 }
 
@@ -1275,13 +1257,10 @@ static void ConvertAmigaPieceData(void)
 	ConvertAmigaPieceXZ(Amiga_Piece10_XZ, Piece10_XZ, sizeof(Piece10_XZ));
 
 	// convert Y data
-	for (int32_t i = 0; i < NUM_AMIGA_PIECE_Y; i++)
-		ConvertAmigaPieceY(&Amiga_Piece_Y[i], Piece_Y[i]);
+	for (int32_t i = 0; i < NUM_AMIGA_PIECE_Y; i++) ConvertAmigaPieceY(&Amiga_Piece_Y[i], Piece_Y[i]);
 }
 
-static void ConvertAmigaPieceXZ(const uint8_t* amiga,
-                                COORD_XZ* dest,
-                                const int32_t size)
+static void ConvertAmigaPieceXZ(const uint8_t* amiga, COORD_XZ* dest, const int32_t size)
 {
 	const int32_t number = size / sizeof(COORD_XZ);
 
@@ -1299,8 +1278,7 @@ static void ConvertAmigaPieceXZ(const uint8_t* amiga,
 	}
 }
 
-static void ConvertAmigaPieceY(const AMIGA_PIECE_Y* amiga,
-                               COORD_Y* dest)
+static void ConvertAmigaPieceY(const AMIGA_PIECE_Y* amiga, COORD_Y* dest)
 {
 	int32_t number = amiga->size;
 	const uint8_t* yptr = amiga->amigaY;
@@ -1345,16 +1323,15 @@ using TrackFaceType = enum
 	NUM_TRACK_FACES
 };
 
-static SWVertex* pTrackVertices = nullptr;
+static SceneVertex* pTrackVertices = nullptr;
 static uint32_t* pTrackIndices = nullptr;
-static SWVertex* pShadowVertices = nullptr;
+static SceneVertex* pShadowVertices = nullptr;
 static int32_t trackVertices, trackIndices, trackSegments;
 static int32_t numShadowVertices;
 static int32_t maxTrackVertices, maxTrackIndices, maxShadowVertices;
 static int32_t PieceFirstVertex[NUM_TRACK_FACES][MAX_PIECES_PER_TRACK];
 static int32_t PieceFirstIndex[NUM_TRACK_FACES][MAX_PIECES_PER_TRACK];
 static int32_t SegmentRoadTexture[MAX_PIECES_PER_TRACK * MAX_SEGMENTS_PER_PIECE];
-
 
 static void SetSegmentTextures(const TrackState& t)
 {
@@ -1376,17 +1353,13 @@ static void SetSegmentTextures(const TrackState& t)
 			}
 			else if (roadColourIndex == SCR_BASE_COLOUR + 1) // darker
 			{
-				if (rlc == 0)
-					tt = 0;
-				else
-					tt = 2;
+				if (rlc == 0) tt = 0;
+				else tt = 2;
 			}
 			else if (roadColourIndex == SCR_BASE_COLOUR + 2) // lighter
 			{
-				if (rlc == 0)
-					tt = 1;
-				else
-					tt = 3;
+				if (rlc == 0) tt = 1;
+				else tt = 3;
 			}
 			else // if (roadColourIndex == SCR_BASE_COLOUR)	// black
 			{
@@ -1400,10 +1373,8 @@ static void SetSegmentTextures(const TrackState& t)
 	}
 }
 
-
 static Vec3 GetPieceVertex(const TrackState& t, const int32_t piece, const double piece_x, const double piece_y,
-                           const double piece_z,
-                           const int32_t offset)
+                           const double piece_z, const int32_t offset)
 {
 	double x = t.Track[piece].coords[offset].x;
 	double y = t.Track[piece].coords[offset].y;
@@ -1426,11 +1397,9 @@ static Vec3 GetPieceVertex(const TrackState& t, const int32_t piece, const doubl
 	return Vec3(x, y, z);
 }
 
-
 static void StorePieceVertex(const TrackState& t, const int32_t piece, const double piece_x, const double piece_y,
-                             const double piece_z,
-                             const int32_t coordOffset, SWVertex* pVertices, const uint32_t colour, const double tu,
-                             const double tv)
+                             const double piece_z, const int32_t coordOffset, SceneVertex* pVertices,
+                             const uint32_t colour, const double tu, const double tv)
 {
 	const Vec3 v = GetPieceVertex(t, piece, piece_x, piece_y, piece_z, coordOffset);
 	pVertices[trackVertices].pos = v;
@@ -1439,7 +1408,6 @@ static void StorePieceVertex(const TrackState& t, const int32_t piece, const dou
 	pVertices[trackVertices].tv = tv;
 	++trackVertices;
 }
-
 
 static void StoreQuadIndices(uint32_t* pIndices, const int32_t baseVert, const int i0, const int i1, const int i2,
                              const int i3, const int i4, const int i5)
@@ -1451,7 +1419,6 @@ static void StoreQuadIndices(uint32_t* pIndices, const int32_t baseVert, const i
 	pIndices[trackIndices++] = baseVert + i4;
 	pIndices[trackIndices++] = baseVert + i5;
 }
-
 
 void RemoveShadowTriangles(void)
 {
@@ -1466,7 +1433,7 @@ void StoreShadowTriangle(const Vec3& v1, const Vec3& v2, const Vec3& v3, const i
 	const Vec3 verts[] = {v1, v2, v3};
 	for (const auto& v : verts)
 	{
-		SWVertex& sv = pShadowVertices[numShadowVertices];
+		SceneVertex& sv = pShadowVertices[numShadowVertices];
 		sv.pos = v;
 		sv.color = colour;
 		sv.tu = 0;
@@ -1475,11 +1442,9 @@ void StoreShadowTriangle(const Vec3& v1, const Vec3& v2, const Vec3& v3, const i
 	}
 }
 
-
 // Create/update piece in vertex and index buffers using indexed triangle list
-static void CreateUpdatePieceInVB(const TrackState& t, const int32_t piece, const int32_t face, SWVertex* pVertices,
-                                  uint32_t* pIndices,
-                                  const bool create)
+static void CreateUpdatePieceInVB(const TrackState& t, const int32_t piece, const int32_t face, SceneVertex* pVertices,
+                                  uint32_t* pIndices, const bool create)
 {
 	const int32_t numSegments = t.Track[piece].numSegments;
 
@@ -1544,18 +1509,16 @@ static void CreateUpdatePieceInVB(const TrackState& t, const int32_t piece, cons
 	}
 }
 
-
 // Shadow rendering (on the track surface)
 void CreateShadowVertexBuffer(void)
 {
 	if (pShadowVertices == nullptr)
 	{
 		maxShadowVertices = MAX_VERTICES_PER_SHADOW;
-		pShadowVertices = new SWVertex[maxShadowVertices];
+		pShadowVertices = new SceneVertex[maxShadowVertices];
 	}
 	numShadowVertices = 0;
 }
-
 
 void FreeShadowVertexBuffer(void)
 {
@@ -1568,7 +1531,7 @@ void CreateTrackVertexBuffer(const TrackState& t)
 	if (pTrackVertices == nullptr)
 	{
 		maxTrackVertices = MAX_VERTICES_PER_TRACK;
-		pTrackVertices = new SWVertex[maxTrackVertices];
+		pTrackVertices = new SceneVertex[maxTrackVertices];
 	}
 	if (pTrackIndices == nullptr)
 	{
@@ -1590,7 +1553,6 @@ void CreateTrackVertexBuffer(const TrackState& t)
 	}
 }
 
-
 void FreeTrackVertexBuffer(void)
 {
 	delete[] pTrackVertices;
@@ -1598,7 +1560,6 @@ void FreeTrackVertexBuffer(void)
 	delete[] pTrackIndices;
 	pTrackIndices = nullptr;
 }
-
 
 // Used to update vertices and indices, e.g. by MoveDrawBridge
 static void UpdatePieceInVB(const TrackState& t, const int32_t piece)
@@ -1629,79 +1590,78 @@ static void UpdatePieceInVB(const TrackState& t, const int32_t piece)
 
 static constexpr int32_t TEXTURED_SEGMENTS_AROUND_PLAYER = 11;
 
-
-void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRenderer& r, const int32_t playerCurrentPiece,
-               const int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures)
+// The middle of one face of a segment: the mean of the corners its two triangles index.
+static Vec3 SegmentFaceCentre(const int32_t firstIndex)
 {
-	int32_t segmentsRendered = 0;
+	Vec3 sum;
+	for (int32_t i = 0; i < 6; ++i) sum = sum + pTrackVertices[pTrackIndices[firstIndex + i]].pos;
+	return sum / 6.0;
+}
 
-	if (t.TrackID == NO_TRACK)
-		return;
+void DrawTrack(const TrackState& t, const GameModeType GameMode, SceneRenderer& r, const int32_t playerCurrentPiece,
+               const int32_t playerCurrentSegment, const std::vector<RoadTexture>& roadTextures)
+{
+	if (t.TrackID == NO_TRACK) return;
 
-	if (!pTrackVertices || !pTrackIndices) return;
+	if (!pTrackVertices || !pTrackIndices || t.NumTrackSegments <= 0) return;
 
-	if (GameMode == TRACK_MENU || GameMode == TRACK_PREVIEW)
+	constexpr int32_t indicesPerSegment = 6; // 2 triangles × 3 indices
+	const int32_t leftFirstIndex = PieceFirstIndex[LEFT_SIDE][0];
+	const int32_t rightFirstIndex = PieceFirstIndex[RIGHT_SIDE][0];
+	const int32_t roadFirstIndex = PieceFirstIndex[ROAD][0];
+
+	// A race draws road lines on the segments around the player; the track menu and preview draw none.
+	const bool roadLines = GameMode != TRACK_MENU && GameMode != TRACK_PREVIEW;
+	const int32_t texturedCount = roadLines ? std::min(t.NumTrackSegments, TEXTURED_SEGMENTS_AROUND_PLAYER * 2 + 1) : 0;
+	const int32_t centreSegment = t.Track[playerCurrentPiece].firstSegment + playerCurrentSegment;
+	const int32_t firstTexturedSegment = (centreSegment - TEXTURED_SEGMENTS_AROUND_PLAYER + t.NumTrackSegments) %
+	                                     t.NumTrackSegments;
+
+	static std::vector<uint32_t> groups;
+	groups.resize(t.NumTrackSegments);
+
+	for (int32_t s = 0; s < t.NumTrackSegments; ++s)
 	{
-		// Draw track without road lines
-		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, 0, trackIndices / 3, {});
-	}
-	else //	GAME_IN_PROGRESS or GAME_OVER
-	{
-		// Draw track with road lines
-		constexpr int32_t indicesPerSegment = 6; // 2 triangles × 3 indices
-
-		// 1) Draw left and right sides untextured
-		int32_t v = PieceFirstIndex[LEFT_SIDE][0];
-		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, t.NumTrackSegments * 2, {});
-
-		v = PieceFirstIndex[RIGHT_SIDE][0];
-		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, v, t.NumTrackSegments * 2, {});
-		// Road and side-wall top edges are intentionally coplanar. Pull the road
-		// forward by a tiny reversed-Z amount so depth ties resolve consistently.
-		r.SetDepthBias(1e-7);
-
-		const int32_t roadFirstIndex = PieceFirstIndex[ROAD][0];
-		const int32_t texturedCount = std::min(t.NumTrackSegments, TEXTURED_SEGMENTS_AROUND_PLAYER * 2 + 1);
-		const int32_t centreSegment = t.Track[playerCurrentPiece].firstSegment + playerCurrentSegment;
-		const int32_t firstTexturedSegment =
-			(centreSegment - TEXTURED_SEGMENTS_AROUND_PLAYER + t.NumTrackSegments) % t.NumTrackSegments;
-
-		// Draw the complementary circular range untextured, splitting at segment zero.
-		const int32_t untexturedCount = t.NumTrackSegments - texturedCount;
-		const int32_t firstUntexturedSegment = (firstTexturedSegment + texturedCount) % t.NumTrackSegments;
-		const int32_t untexturedBeforeWrap = std::min(untexturedCount, t.NumTrackSegments - firstUntexturedSegment);
-		if (untexturedBeforeWrap > 0)
+		const RoadTexture* texture = nullptr;
+		if ((s - firstTexturedSegment + t.NumTrackSegments) % t.NumTrackSegments < texturedCount)
 		{
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices,
-				roadFirstIndex + firstUntexturedSegment * indicesPerSegment, untexturedBeforeWrap * 2, {});
-		}
-		if (untexturedCount > untexturedBeforeWrap)
-		{
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, roadFirstIndex,
-				(untexturedCount - untexturedBeforeWrap) * 2, {});
-		}
-
-		int32_t s = firstTexturedSegment;
-		for (int32_t i = 0; i < texturedCount; i++, s++)
-		{
-			if (s == t.NumTrackSegments)
-				s = 0;
-
-			// Setup texture
 			const size_t textureIndex = SegmentRoadTexture[s];
-			const SWTexture* texture = textureIndex < roadTextures.size() ? &roadTextures[textureIndex] : nullptr;
-			r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices,
-				roadFirstIndex + s * indicesPerSegment, 2, texture);
-			segmentsRendered++;
+			texture = textureIndex < roadTextures.size() ? &roadTextures[textureIndex] : nullptr;
 		}
-		r.SetDepthBias(0.0);
+
+		// A segment is drawn whole, placed by its farthest point so a car on it comes after it: the solid of its
+		// road and the walls hanging from the road's edges to their feet.
+		const int32_t leftWall = leftFirstIndex + s * indicesPerSegment;
+		const int32_t rightWall = rightFirstIndex + s * indicesPerSegment;
+		const int32_t road = roadFirstIndex + s * indicesPerSegment;
+
+		groups[s] = r.BeginSolid((SegmentFaceCentre(leftWall) + SegmentFaceCentre(rightWall)) / 2.0);
+		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, leftWall, 2);
+		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, rightWall, 2);
+		r.DrawIndexedTriangleList(pTrackVertices, pTrackIndices, road, 2, texture);
+		r.EndGroup();
 	}
 
-	/* Finally draw the opponent's car shadow */
-	if (GameMode != TRACK_MENU && numShadowVertices > 0)
+	// Where a segment ends the next begins, beyond the plane of the joint; of the two, the one on the eye's
+	// side of it comes last. The road's first triangle runs from its near left corner to its far corners, and
+	// the left wall's to its far foot.
+	for (int32_t s = 0; s < t.NumTrackSegments; ++s)
 	{
-		r.DrawTriangleList(pShadowVertices, 0, numShadowVertices / 3, {});
+		const int32_t road = roadFirstIndex + s * indicesPerSegment;
+		const int32_t leftWall = leftFirstIndex + s * indicesPerSegment;
+		const int32_t next = (s + 1) % t.NumTrackSegments;
+		const bool eyeBeyond = r.IsEyeAcross(pTrackVertices[pTrackIndices[road + 1]].pos,
+		                                     pTrackVertices[pTrackIndices[road + 2]].pos,
+		                                     pTrackVertices[pTrackIndices[leftWall + 2]].pos,
+		                                     pTrackVertices[pTrackIndices[road]].pos);
+		if (eyeBeyond) r.OrderGroups(groups[s], groups[next]);
+		else r.OrderGroups(groups[next], groups[s]);
 	}
+}
+
+void DrawOpponentShadow(SceneRenderer& r)
+{
+	if (pShadowVertices && numShadowVertices > 0) r.DrawTriangleList(pShadowVertices, 0, numShadowVertices / 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,35 +1670,29 @@ void DrawTrack(const TrackState& t, const GameModeType GameMode, SoftwareRendere
 
 static constexpr int32_t NUM_DRAW_BRIDGE_Y_VALUES = 15;
 
-
 static int32_t on_draw_bridge_offset = 0;
 static int32_t draw_bridge_frame_count = 0;
 static int32_t draw_bridge_y_list[NUM_DRAW_BRIDGE_Y_VALUES];
 
-
 // Opponent's speed values for driving up the Draw Bridge (one value for each height)
-static uint8_t TAB5a996[16] = {
-	0xd2, 0xbb, 0xb7, 0xb3, 0xb1, 0xad, 0xab, 0xa7, 0xa6, 0xa4, 0xa2, 0xa1, 0x9f, 0x9f, 0x9f, 0x9e
-};
+static uint8_t TAB5a996[16] = {0xd2, 0xbb, 0xb7, 0xb3, 0xb1, 0xad, 0xab, 0xa7,
+                               0xa6, 0xa4, 0xa2, 0xa1, 0x9f, 0x9f, 0x9f, 0x9e};
 // Opponent's speed values for approaching the Draw Bridge
-static uint8_t TAB5a9a6[16] = {
-	0xf7, 0xf7, 0xf6, 0xf6, 0xf5, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfb, 0xfd, 0xff, 0x02, 0x05, 0xfd
-};
+static uint8_t TAB5a9a6[16] = {0xf7, 0xf7, 0xf6, 0xf6, 0xf5, 0xf5, 0xf6, 0xf7,
+                               0xf8, 0xf9, 0xfb, 0xfd, 0xff, 0x02, 0x05, 0xfd};
 
 extern uint8_t opponents_speed_values[NUM_TRACKS][MAX_PIECES_PER_TRACK];
-
 
 void MoveDrawBridge(const TrackState& t, const GameState& game)
 {
 	int32_t f, i, yinc;
 
-	if (t.TrackID != DRAW_BRIDGE)
-		return;
+	if (t.TrackID != DRAW_BRIDGE) return;
 
 	const bool playerOnBridge = game.player_current_piece >= 51 && game.player_current_piece < 56;
 	const bool opponentOnBridge = game.opponents_current_piece >= 51 && game.opponents_current_piece < 56;
 	const bool opponentApproaching = game.opponents_current_piece >= 48 && game.opponents_current_piece < 51 &&
-		on_draw_bridge_offset != 0;
+	                                 on_draw_bridge_offset != 0;
 
 	if (playerOnBridge || opponentOnBridge || opponentApproaching)
 	{
@@ -1787,8 +1741,7 @@ void MoveDrawBridge(const TrackState& t, const GameState& game)
 		UpdatePieceInVB(t, 54);
 		UpdatePieceInVB(t, 55);
 
-		if (game.opponents_current_piece != 47)
-			return;
+		if (game.opponents_current_piece != 47) return;
 
 		f = draw_bridge_frame_count;
 	}
@@ -1803,11 +1756,8 @@ void MoveDrawBridge(const TrackState& t, const GameState& game)
 	}
 }
 
-
-static void UpdateDrawBridgeYCoords(const TrackState& t, const int32_t piece,
-                                    const int32_t firstCoord,
-                                    const int32_t lastCoord,
-                                    const int32_t firstYIndex,
+static void UpdateDrawBridgeYCoords(const TrackState& t, const int32_t piece, const int32_t firstCoord,
+                                    const int32_t lastCoord, const int32_t firstYIndex,
                                     const int32_t direction) // 1 or -1
 {
 	int32_t i, j;
@@ -1829,7 +1779,6 @@ static void UpdateDrawBridgeYCoords(const TrackState& t, const int32_t piece,
 	}
 }
 
-
 void ResetDrawBridge(const TrackState& t, GameState& p)
 {
 	on_draw_bridge_offset = 0;
@@ -1841,14 +1790,13 @@ void ResetDrawBridge(const TrackState& t, GameState& p)
 	MoveDrawBridge(t, p);
 }
 
-
 // ---------------------------------------------------------------------------
 // Track data loading from Amiga resource files
 // ---------------------------------------------------------------------------
 
-
 static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 {
+	// clang-format off
 	static std::string_view track_resource_names[NUM_TRACKS] =
 	{
 		"LittleRamp.bin",
@@ -1860,6 +1808,7 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 		"HighJump.bin",
 		"RollerCoaster.bin"
 	};
+	// clang-format on
 	static const uint8_t* track_buffer_ptrs[NUM_TRACKS];
 	static int32_t first_time = true;
 
@@ -1871,8 +1820,7 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 		for (int32_t n = 0; n < NUM_TRACKS; n++)
 		{
 			const auto buf = platform::embedded_resource_data(track_resource_names[n]);
-			if (buf.empty())
-				return false;
+			if (buf.empty()) return false;
 
 			track_buffer_ptrs[n] = buf.data();
 		}
@@ -1889,17 +1837,13 @@ static int32_t ReadAmigaTrackData(TrackState& t, const int32_t track)
 	t.HalfALapPiece = t.StartLinePiece + t.NumTrackPieces / 2;
 	if (t.HalfALapPiece >= t.NumTrackPieces) t.HalfALapPiece -= t.NumTrackPieces;
 
-	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++)
-		Piece_X_Z_Position[j] = static_cast<char>(buffer[i]);
+	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++) Piece_X_Z_Position[j] = static_cast<char>(buffer[i]);
 
-	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++)
-		Piece_Angle_And_Template[j] = static_cast<char>(buffer[i]);
+	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++) Piece_Angle_And_Template[j] = static_cast<char>(buffer[i]);
 
-	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++)
-		Left_Y_Coordinate_ID[j] = static_cast<char>(buffer[i]);
+	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++) Left_Y_Coordinate_ID[j] = static_cast<char>(buffer[i]);
 
-	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++)
-		Right_Y_Coordinate_ID[j] = static_cast<char>(buffer[i]);
+	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; i++, j++) Right_Y_Coordinate_ID[j] = static_cast<char>(buffer[i]);
 
 	for (int32_t j = 0; j < MAX_PIECES_PER_TRACK; j++)
 	{

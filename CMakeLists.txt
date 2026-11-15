@@ -28,7 +28,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(libdesktop
     GIT_REPOSITORY https://github.com/ZacWalk/libdesktop.git
-    GIT_TAG        04109ee82a500db38d439fa281bbc3f43124adfe
+    GIT_TAG        d172a12c6e3df0831a641133b96d073559a99db5
 )
 FetchContent_MakeAvailable(libdesktop)
 
@@ -47,7 +47,8 @@ libdesktop_add_app(stuntcarracer
         src/game.tests.cpp
         src/game.track.cpp
         src/main.cpp
-        src/render.software.cpp
+        src/render.scene.cpp
+    ICON src/res/stuntcarracer.ico
     DESCRIPTION "Stunt Car Racer"
     OUTPUT_NAME stunt-car-racer-64
     EMBED       ${SCR_TRACKS} ${SCR_SOUNDS} ${SCR_BITMAPS}
@@ -56,7 +57,7 @@ libdesktop_add_app(stuntcarracer
 target_link_libraries(stuntcarracer PRIVATE libdesktop::ui)
 
 target_include_directories(stuntcarracer PRIVATE src)
-target_compile_options(stuntcarracer PRIVATE /W3 /MP)
+target_compile_options(stuntcarracer PRIVATE /W4 /MP)
 
 target_link_options(stuntcarracer PRIVATE
     /DEBUG
@@ -74,9 +75,10 @@ set_target_properties(stuntcarracer PROPERTIES
 include(CTest)
 if(BUILD_TESTING)
     add_executable(stuntcarracer_tests tests/smoke.cpp)
+    target_compile_options(stuntcarracer_tests PRIVATE /W4)
     add_test(NAME stuntcarracer_unit COMMAND stuntcarracer_tests)
-    set_tests_properties(stuntcarracer_unit PROPERTIES TIMEOUT 30 LABELS stuntcarracer)
+    set_tests_properties(stuntcarracer_unit PROPERTIES TIMEOUT 30 LABELS "stuntcarracer;headless")
 
     add_test(NAME stuntcarracer_selftest COMMAND stuntcarracer -test)
-    set_tests_properties(stuntcarracer_selftest PROPERTIES TIMEOUT 120 LABELS stuntcarracer)
+    set_tests_properties(stuntcarracer_selftest PROPERTIES TIMEOUT 120 LABELS "stuntcarracer;headless")
 endif()

@@ -1,79 +1,63 @@
 # Stunt Car Racer — Agent Instructions
 
-This is a Windows C++ port of the classic game **Stunt Car Racer** (originally by Geoff Crammond).
+A Windows C++ port of the 1989 racing game on libdesktop's `core`, `platform`,
+`render` and `ui` libraries. [README.md](README.md) covers the game, its
+renderer, building and the licence.
 
-## Source files (src/)
+## Layout
 
-- **main.cpp** — `ui::app` entry point, drawn menu-bar/frame host, software-surface element, input forwarding and the game's own frame loop
-- **game.h** — Shared declarations: screen/render constants, menu IDs, fixed-point 3D math, COORD types, cross-module structs, and null-safe sound helpers
-- **game.cpp** — Top-level game logic: frame update/render, menu commands and accelerators (`BuildGameMenu`), palette/resources/sound setup, viewpoints, car construction and world transforms
-- **game.backdrop.cpp** — Sky/ground horizon and distant scenery rendering
-- **game.drive.cpp** — Car physics and player driving behaviour
-- **game.opponent.cpp** — Opponent AI, car-to-car collision detection, race position tracking
-- **game.track.cpp** — Track data loading, conversion, and rendering
-- **render.software.h / .cpp** — Software 3D renderer writing a `core::surface`
-- **game.tests.cpp** — Headless self-tests (chain-drop / settling regression suite across all tracks, menu shortcuts, pause and minimise rules)
+- `src/main.cpp` runs the game in a libdesktop `ui::shell`: its menus, the
+  canvas the scene is drawn on (`AppDraw`), the fixed step that reads the held
+  driving keys (`AppStep`), and the keys the game takes directly.
+- `src/game.h` and `src/game*.cpp` are the game, one subject per file; each
+  file's header comment says what it holds. `BuildGameMenu` in `game.cpp`
+  builds the menus and their accelerators.
+- `src/render.scene.*` is the renderer: the game's 3D faces drawn as libdesktop
+  polygons by the painter's algorithm. Its comments document the ordering.
+- `Tracks/`, `Sounds/` and `Bitmap/` are compiled in by
+  `libdesktop_add_app(EMBED ...)` and read with
+  `platform::embedded_resource_data`.
 
-The platform layer lives in the shared **libdesktop** repository's `core`,
-`platform`, `render` and `ui` libraries. The application is a `ui::app`; its
-menu bar is a `ui::control` in the frame host's element tree, and the renderer's
-`core::surface` is uploaded as a texture by the content element. Tracks, samples
-and road textures are compiled into the executable by
-`libdesktop_add_app(EMBED ...)` and fetched with
-`platform::embedded_resource_data`.
+## Build and test
 
-## Build & test
+- Verify with `.\dd.ps1 test --label stuntcarracer`, which builds both
+  configurations and runs the headless self-tests (`-test`).
+- Run them after touching `game.drive.cpp`, `game.track.cpp` or any shared
+  physics or track geometry: the chain drop on every track catches a car that
+  sinks through or floats above the road.
+- Add cases to `AppRunTests` in [game.tests.cpp](src/game.tests.cpp). The tests
+  open no window, log to stderr and to `test_results.log` in the working
+  directory, end with a `Total failures: N` line, and exit non-zero on any
+  failure.
+- `.clang-format` is the layout (tabs, Allman braces, 120 columns):
+  `.\dd.ps1 fmt` applies it to `src` and `tests`, given clang-format on PATH
+  (Visual Studio installs one in `VC\Tools\Llvm\x64\bin`). Data tables keep
+  their hand layout between `// clang-format off` and `// clang-format on`.
+  Both targets build at `/W4` with no warnings, and `.clang-tidy` names the
+  bug-finding and performance checks the code is linted against.
+- `dd.ps1` and `.dd/` are the upstream [dd](https://github.com/ZacWalk/dd)
+  files, with hashes in [docs/dd-upstream.json](docs/dd-upstream.json); do not
+  edit them. Keep project configuration in `dd.psd1`. The one dependency,
+  libdesktop, is pinned by the `GIT_TAG` in `CMakeLists.txt`, not in
+  `cmake/dd-dependencies.json`. Upstream dd documents its
+  [CLI and MCP modes](https://github.com/ZacWalk/dd/blob/main/docs/mcp.md#two-modes)
+  and [built-in commands](https://github.com/ZacWalk/dd/blob/main/docs/cli.md#commands).
 
-```pwsh
-.\dd.ps1 build                        # both configs; or: .\dd.ps1 build release
-.\dd.ps1 test --label stuntcarracer   # build both, then run the headless self-tests
-```
+## Rules
 
-The vendored dd driver sets up the MSVC environment itself. Output lands in
-`exe/` (`stunt-car-racer-64.exe`, `-64d` for Debug). An unfiltered
-`.\dd.ps1 test` also opens the game's window for a second as a smoke check.
-The vendored [dd](https://github.com/ZacWalk/dd) files are the upstream
-`dd.ps1` and `.dd/` tree; [docs/dd-upstream.json](docs/dd-upstream.json)
-records their hashes. Keep project configuration in `dd.psd1`; the one
-dependency, libdesktop, is pinned by the `GIT_TAG` in `CMakeLists.txt`, not in
-`cmake/dd-dependencies.json`. Use `.\dd.ps1 commands --json` to list the
-project command surface. Upstream dd owns the documentation for
-[CLI and MCP mode](https://github.com/ZacWalk/dd/blob/main/docs/mcp.md#two-modes)
-and [built-in commands](https://github.com/ZacWalk/dd/blob/main/docs/cli.md#commands).
-
-Tests run without creating a window, write a per-frame log to stdout, and exit
-with code `0` on success / non-zero on any failure (final `Total failures: N`
-line). Add new cases by extending `AppRunTests` in [game.tests.cpp](src/game.tests.cpp).
-Always run `-test` after touching `game.drive.cpp`, `game.track.cpp`, or any
-shared physics/track-geometry code — the chain-drop suite catches a lot of
-"car sinks through / floats above the road" regressions for free.
-
-## Rendering system
-
-A small, single-mode software rasterizer in `render.software.*`. The frame
-buffer is a packed `core::surface`; the UI content element uploads it as a
-texture each frame.
-
-**Pipeline (per triangle):**
-1. World/View/Projection matrices set via `SetWorldMatrix` / `SetViewMatrix` /
-   `SetProjectionMatrix`. They are combined lazily into `m_worldViewProj` on
-   the next draw.
-2. `TransformToClipSpace` produces homogeneous clip-space verts.
-3. Flat per-face lighting is applied (`ApplyFaceLighting`): face normal in
-   object space → world space → `N·L` with fixed light dir, ambient, and
-   diffuse → vertex colours scaled.
-4. `ProcessAndRasterizeTriangle` near-plane-clips against `m_nearClipW`
-   (derived from the projection matrix in `SetProjectionMatrix`, so it always
-   matches the actual frustum), perspective-divides, and rejects triangles
-   past the far plane. **No back-face culling**: the track is single-sided,
-   so culling caused the road to vanish whenever the eye crossed below the
-   surface (banked turns, hill crests, hard landings). The rasterizer handles
-   both windings via signed area; back-facing triangles shade as ambient-only
-   because `ApplyFaceLighting` clamps `N·L` at 0.
-5. `RasterizeTriangle` does a top-left-fill-rule edge-function rasterizer with
-   incremental per-pixel stepping. Two inner loops: textured (perspective-
-   correct UVs) and Gouraud-shaded RGB. **Reversed-Z depth**: double Z-buffer
-   cleared to 0.0, test is `z > depthBuf`, projection maps near→1 and far→0.
-   This keeps depth precision usable across the huge near/far ratio (0.5 /
-   131072) — the standard near→0 mapping crushes everything past view-z ≈
-   1000 into the last few double ULPs and produces far-over-near artifacts.
+- **Draw a stretch of track as one `BeginSolid` group, and a car with its
+  shadow as one `Placement::Nearest` group of convex parts.** The painter's
+  order comes from them: a face drawn outside a group is placed alone, by its
+  farthest point, and is easily painted over wrongly.
+- **Never cull the track.** It is single-sided, so culling makes the road vanish
+  whenever the eye drops below it; a solid draws its faces turned from the eye
+  first instead. Only a car's convex parts drop faces turned away.
+- **Reversed-Z projection.** `Mat4PerspectiveFovLH` maps near to 1 and far to
+  0; the renderer reads the near plane back from it to clip against.
+- **Keep the original's integer arithmetic.** Its integer divisions truncate on
+  purpose (the car's `VCAR_WIDTH / 4` is 40, not 40.5), so never make one
+  floating-point. A conversion warning takes a `static_cast` that keeps the
+  value the implicit conversion gave.
+- Format game text with `format()` from `game.h`. It is standard `vswprintf`,
+  so wide-string arguments take `%ls`, and text that overflows its buffer
+  throws instead of truncating.

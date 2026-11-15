@@ -1,9 +1,18 @@
 #pragma once
 
 // The game is a ui application: the shared platform owns the window and the drawn menu bar.
-enum class icon_index : int { none };
-enum class command_group : int { none };
-enum class commands : int { none };
+enum class icon_index : int
+{
+	none
+};
+enum class command_group : int
+{
+	none
+};
+enum class commands : int
+{
+	none
+};
 
 #include "libdesktop/ui.h"
 #include "libdesktop/ui/menu_bar.h"
@@ -20,16 +29,15 @@ enum class commands : int { none };
 //   - Function declarations exported by game.cpp and the game.* modules
 //
 
-
 #include <cmath>
 #include <cstdint>
 #include <string_view>
 #include <vector>
 
 struct SoundState;
-class SoftwareRenderer;
-extern SoftwareRenderer g_renderer;
-struct SWTexture;
+class SceneRenderer;
+extern SceneRenderer g_renderer;
+struct RoadTexture;
 
 // ---------------------------------------------------------------------------
 // Amiga-era constants and small value types that used to live in the game's
@@ -76,15 +84,8 @@ void GameClose();
 
 // Window presentation policy kept independent of ui frame and native window objects.
 std::string GameWindowTitle(bool sound_available);
-core::recti GameWindowBounds(core::sizei screen, double scale);
 
-// Presents the software renderer's surface through the ui frame.
-void GamePresent();
-
-// True while the window is minimised, so the frame loop can idle.
-bool GameIsMinimized();
 bool GameIsPaused();
-void GameSetInputActive(bool active);
 
 // The game runs happily with no audio device — and the headless tests never
 // create one — so every sound call has to tolerate a buffer that is not there.
@@ -96,11 +97,26 @@ constexpr float PAN_LEFT = -1.0f;
 constexpr float PAN_CENTER = 0.0f;
 constexpr float PAN_RIGHT = 1.0f;
 
-inline void SoundPlay(const platform::sound_buffer_ptr& b, const bool loop = false) { if (b) b->play(loop); }
-inline void SoundStop(const platform::sound_buffer_ptr& b) { if (b) b->stop(); }
-inline void SoundSetFrequency(const platform::sound_buffer_ptr& b, const uint32_t hz) { if (b) b->set_frequency(hz); }
-inline void SoundSetPan(const platform::sound_buffer_ptr& b, const float pan) { if (b) b->set_pan(pan); }
-inline void SoundSetPlayPosition(const platform::sound_buffer_ptr& b, const uint32_t pos) { if (b) b->set_play_position(pos); }
+inline void SoundPlay(const platform::sound_buffer_ptr& b, const bool loop = false)
+{
+	if (b) b->play(loop);
+}
+inline void SoundStop(const platform::sound_buffer_ptr& b)
+{
+	if (b) b->stop();
+}
+inline void SoundSetFrequency(const platform::sound_buffer_ptr& b, const uint32_t hz)
+{
+	if (b) b->set_frequency(hz);
+}
+inline void SoundSetPan(const platform::sound_buffer_ptr& b, const float pan)
+{
+	if (b) b->set_pan(pan);
+}
+inline void SoundSetPlayPosition(const platform::sound_buffer_ptr& b, const uint32_t pos)
+{
+	if (b) b->set_play_position(pos);
+}
 
 inline void SoundSetVolume(const platform::sound_buffer_ptr& b, const int32_t amigaVolume)
 {
@@ -114,14 +130,28 @@ inline uint32_t SoundPlayPosition(const platform::sound_buffer_ptr& b)
 	return b ? b->play_position().value_or(0) : 0;
 }
 
+// The driving keys held at a step: the arrows steer, accelerate and brake, and Ctrl boosts while accelerating.
+struct DrivingKeys
+{
+	bool left = false;
+	bool right = false;
+	bool up = false;
+	bool down = false;
+	bool ctrl = false;
+};
+
 // Entry points implemented by the game and driven by main.cpp
 bool AppInit();
-void AppRun();
+// One fixed step of the game, with the driving keys held during it.
+void AppStep(const DrivingKeys& keys);
+// The fixed steps a second, which the Speed menu changes.
+double AppStepsPerSecond();
+// Makes the frame for a client area of bounds and draws it there.
+void AppDraw(render::draw_context& dc, core::recti bounds);
+void AppShutdown();
 void AppHandleFrameSize(int cx, int cy);
 void AppHandleKeyDown(char32_t nChar);
-void AppHandleKeyUp(char32_t nChar);
-void AppResetInput();
-// One pass of the frame loop while the window is minimised; the tests call it.
+// The window was minimised: the race stands still, and its engine falls silent.
 void AppIdleMinimized();
 int AppRunTests();
 
@@ -152,7 +182,7 @@ struct ScreenSize
 	int32_t height;
 };
 
-ScreenSize GetScreenDimensions(const SoftwareRenderer& r);
+ScreenSize GetScreenDimensions(const SceneRenderer& r);
 
 uint32_t SCRGB(int32_t colour_index);
 
@@ -205,11 +235,11 @@ constexpr int IDM_RESTART_RACE = 1302;
 constexpr int32_t MAX_ANGLE = 65536;
 constexpr double ANGLE_TO_RADIANS = 2.0 * PI / MAX_ANGLE;
 
-constexpr int32_t _360_DEGREES = MAX_ANGLE;
-constexpr int32_t _270_DEGREES = 3 * MAX_ANGLE / 4;
-constexpr int32_t _180_DEGREES = MAX_ANGLE / 2;
-constexpr int32_t _90_DEGREES = MAX_ANGLE / 4;
-constexpr int32_t _0_DEGREES = 0;
+constexpr int32_t DEGREES_360 = MAX_ANGLE;
+constexpr int32_t DEGREES_270 = 3 * MAX_ANGLE / 4;
+constexpr int32_t DEGREES_180 = MAX_ANGLE / 2;
+constexpr int32_t DEGREES_90 = MAX_ANGLE / 4;
+constexpr int32_t DEGREES_0 = 0;
 
 // Wrap an angle expressed in MAX_ANGLE units (a full circle == MAX_ANGLE)
 // into the canonical range [0, MAX_ANGLE). Replaces the integer
@@ -292,26 +322,16 @@ inline double AngleToRadians(const double a)
 	return a * ANGLE_TO_RADIANS;
 }
 
-RotationMatrix CalcYXZTrigCoefficients(double x_angle,
-                                       double y_angle,
-                                       double z_angle);
+RotationMatrix CalcYXZTrigCoefficients(double x_angle, double y_angle, double z_angle);
 
 // Transforms (x, y, z) from local space to world space. The result is in
 // render-space world units (i.e. matches the world coordinates that the
 // renderer / viewpoint pipeline consume directly, NOT the still-PRECISION-
 // scaled physics-space player_x/y/z).
-WorldVec3 WorldOffset(const RotationMatrix& rot,
-                      double x,
-                      double y,
-                      double z);
+WorldVec3 WorldOffset(const RotationMatrix& rot, double x, double y, double z);
 
-ViewAngle LockViewpointToTarget(double viewpoint_x,
-                                double viewpoint_y,
-                                double viewpoint_z,
-                                double tgt_x,
-                                double tgt_y,
+ViewAngle LockViewpointToTarget(double viewpoint_x, double viewpoint_y, double viewpoint_z, double tgt_x, double tgt_y,
                                 double tgt_z);
-
 
 // ---------------------------------------------------------------------------
 // Track
@@ -345,7 +365,7 @@ constexpr int32_t NUM_TRACKS = 8;
 
 struct TRACK_PIECE
 {
-	int32_t x, y, z; // front left corner, within world
+	int32_t x, y, z;         // front left corner, within world
 	int32_t roughPieceAngle; // 0, 90, 180, 270 degrees (internal angle format)
 	int32_t oppositeDirection;
 	int32_t curveToLeft;
@@ -373,10 +393,8 @@ struct TrackState
 	int32_t HalfALapPiece = 0;
 	int32_t StandardBoost = 0;
 	int32_t SuperBoost = 0;
-	uint8_t sections_car_can_be_put_on[16] = {
-		0x00, 0x80, 0x20, 0xc0, 0x00, 0x73, 0x80, 0xc0,
-		0xa9, 0x59, 0x00, 0x02, 0xa9, 0x5e, 0x85, 0x4b
-	};
+	uint8_t sections_car_can_be_put_on[16] = {0x00, 0x80, 0x20, 0xc0, 0x00, 0x73, 0x80, 0xc0,
+	                                          0xa9, 0x59, 0x00, 0x02, 0xa9, 0x5e, 0x85, 0x4b};
 };
 
 wchar_t* GetTrackName(int32_t track);
@@ -385,8 +403,10 @@ int32_t ConvertAmigaTrack(TrackState& t, int32_t track);
 void FreeTrackData(TrackState& t);
 void CreateTrackVertexBuffer(const TrackState& t);
 void FreeTrackVertexBuffer();
-void DrawTrack(const TrackState& t, GameModeType GameMode, SoftwareRenderer& r, int32_t playerCurrentPiece,
-               int32_t playerCurrentSegment, const std::vector<SWTexture>& roadTextures);
+void DrawTrack(const TrackState& t, GameModeType GameMode, SceneRenderer& r, int32_t playerCurrentPiece,
+               int32_t playerCurrentSegment, const std::vector<RoadTexture>& roadTextures);
+// The opponent's shadow, on the road under the car; drawn with the car, before it.
+void DrawOpponentShadow(SceneRenderer& r);
 void CreateShadowVertexBuffer();
 void FreeShadowVertexBuffer();
 
@@ -404,7 +424,7 @@ constexpr uint32_t KEY_P1_ACCEL = 0x00000010u;
 constexpr uint32_t KEY_P1_BOOST = 0x00000020u;
 
 constexpr int32_t REDUCTION = 238; // (238/256)
-constexpr int32_t INCREASE = 276; // (276/256)
+constexpr int32_t INCREASE = 276;  // (276/256)
 
 enum CarType
 {
@@ -472,25 +492,19 @@ struct GameState
 
 	static constexpr int32_t LOCAL_Y_FACTOR = 4;
 
-	double player_x = 0.0,
-	       player_z = 0.0;
+	double player_x = 0.0, player_z = 0.0;
 
-	double player_x_angle = 0.0,
-	       player_y_angle = 0.0,
-	       player_z_angle = 0.0;
+	double player_x_angle = 0.0, player_y_angle = 0.0, player_z_angle = 0.0;
 
-	double player_world_x_speed = 0.0,
-	       player_world_y_speed = 0.0,
-	       player_world_z_speed = 0.0;
+	double player_world_x_speed = 0.0, player_world_y_speed = 0.0, player_world_z_speed = 0.0;
 
-	double player_x_speed = 0.0,
-	       player_y_speed = 0.0;
+	double player_x_speed = 0.0, player_y_speed = 0.0;
 
 	int32_t accelerate = 0, brake = 0;
 
 	int32_t accelerating = false; // previous control state
 
-	int32_t engine_power = 240; // (240 standard, 320 super)
+	int32_t engine_power = 240;    // (240 standard, 320 super)
 	int32_t boost_unit_value = 16; // (16 standard, 12 super)
 
 	int32_t left_right_value = 0;
@@ -525,46 +539,32 @@ struct GameState
 
 	int32_t off_track_count = 0;
 
-	double gravity_x_acceleration = 0.0,
-	       gravity_y_acceleration = 0.0,
-	       gravity_z_acceleration = 0.0;
+	double gravity_x_acceleration = 0.0, gravity_y_acceleration = 0.0, gravity_z_acceleration = 0.0;
 
 	int32_t grounded_delay = 0;
 	int32_t grounded_count = 0;
 	int32_t damage_value = 0;
 	int32_t damaged_count = 0;
 
-	double front_left_amount_below_road = 0.0,
-	       front_right_amount_below_road = 0.0,
-	       rear_amount_below_road = 0.0;
+	double front_left_amount_below_road = 0.0, front_right_amount_below_road = 0.0, rear_amount_below_road = 0.0;
 
-	double old_front_left_difference = 0.0,
-	       old_front_right_difference = 0.0,
-	       old_rear_difference = 0.0;
+	double old_front_left_difference = 0.0, old_front_right_difference = 0.0, old_rear_difference = 0.0;
 
 	int32_t smashed_countdown = 0;
 
 	double car_to_road_collision_z_acceleration = 0.0;
 
-	double player_x_acceleration = 0.0,
-	       player_y_acceleration = 0.0,
-	       player_z_acceleration = 0.0;
+	double player_x_acceleration = 0.0, player_y_acceleration = 0.0, player_z_acceleration = 0.0;
 
-	double total_world_x_acceleration = 0.0,
-	       total_world_y_acceleration = 0.0,
-	       total_world_z_acceleration = 0.0;
+	double total_world_x_acceleration = 0.0, total_world_y_acceleration = 0.0, total_world_z_acceleration = 0.0;
 
-	double player_x_rotation_speed = 0.0,
-	       player_y_rotation_speed = 0.0,
-	       player_z_rotation_speed = 0.0;
+	double player_x_rotation_speed = 0.0, player_y_rotation_speed = 0.0, player_z_rotation_speed = 0.0;
 
-	double player_final_x_rotation_speed = 0.0,
-	       player_final_y_rotation_speed = 0.0,
-	       player_final_z_rotation_speed = 0.0;
+	double player_final_x_rotation_speed = 0.0, player_final_y_rotation_speed = 0.0,
+		   player_final_z_rotation_speed = 0.0;
 
-	double player_x_rotation_acceleration = 0.0,
-	       player_y_rotation_acceleration = 0.0,
-	       player_z_rotation_acceleration = 0.0;
+	double player_x_rotation_acceleration = 0.0, player_y_rotation_acceleration = 0.0,
+		   player_z_rotation_acceleration = 0.0;
 
 	bool raceFinished = false;
 	bool raceWon = false;
@@ -576,7 +576,6 @@ struct GameState
 	bool player_close_to_opponent = false;
 	bool opponent_behind_player = false;
 };
-
 
 void ResetPlayer(GameState& player);
 
@@ -595,13 +594,13 @@ void ResetDrawBridge(const TrackState& t, GameState& p);
 // Visible car model
 // ---------------------------------------------------------------------------
 
-constexpr int32_t VCAR_WIDTH = 162; // ((width 27+27 * segment width 384) / surface factor 256) * PC_FACTOR
+constexpr int32_t VCAR_WIDTH = 162;  // ((width 27+27 * segment width 384) / surface factor 256) * PC_FACTOR
 constexpr int32_t VCAR_LENGTH = 256; // ((length 128 * segment length 256) / surface factor 256) * PC_FACTOR
 constexpr int32_t VCAR_HEIGHT = 162;
 
 void CreateCarVertexBuffer();
 void FreeCarVertexBuffer();
-void DrawCar(SoftwareRenderer& r);
+void DrawCar(SceneRenderer& r);
 
 // ---------------------------------------------------------------------------
 // Opponent
@@ -619,23 +618,14 @@ struct OpponentPose
 
 std::wstring_view GetOpponentName(int32_t opponentID);
 
-CarPose CarBehaviour(TrackState& track, GameState& player, const SoundState& sound,
-                     uint32_t input,
-                     double x,
-                     double y,
-                     double z,
-                     double x_angle,
-                     double y_angle,
-                     double z_angle);
+CarPose CarBehaviour(TrackState& track, GameState& player, const SoundState& sound, uint32_t input, double x, double y,
+                     double z, double x_angle, double y_angle, double z_angle);
 
-OpponentPose OpponentBehaviour(TrackState& track,
-                               GameState& game,
-                               bool bOpponentPaused);
+OpponentPose OpponentBehaviour(TrackState& track, GameState& game, bool bOpponentPaused);
 
 void CarToCarCollision(GameState& player, const SoundState& sound);
 
-int32_t CalculateIfWinning(const TrackState& track, const GameState& game,
-                           int32_t start_finish_piece);
+int32_t CalculateIfWinning(const TrackState& track, const GameState& game, int32_t start_finish_piece);
 
 int32_t CalculateOpponentsDistance(const GameState& game);
 
@@ -668,10 +658,9 @@ struct SoundState
 // Backdrop & scenery
 // ---------------------------------------------------------------------------
 
-void DrawBackdrop(SoftwareRenderer& r,
-                  double viewpoint_y,
-                  double viewpoint_x_angle, // radians
-                  double viewpoint_y_angle, // radians
+void DrawBackdrop(SceneRenderer& r, double viewpoint_y,
+                  double viewpoint_x_angle,  // radians
+                  double viewpoint_y_angle,  // radians
                   double viewpoint_z_angle); // radians
 
 void NextSceneryType();

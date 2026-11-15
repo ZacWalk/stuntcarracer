@@ -3,7 +3,7 @@
 #include <algorithm>
 
 #include "game.h"
-#include "render.software.h"
+#include "render.scene.h"
 
 static constexpr int32_t SKY_COLOUR = SCR_BASE_COLOUR + 7;
 static constexpr int32_t GROUND_COLOUR = SCR_BASE_COLOUR + 13;
@@ -21,9 +21,7 @@ struct ClipLineResult
 	int32_t x1, y1, x2, y2;
 };
 
-static ClipLineResult ClipLine(int32_t x1, int32_t y1,
-                               int32_t x2, int32_t y2,
-                               const int32_t screen_width,
+static ClipLineResult ClipLine(int32_t x1, int32_t y1, int32_t x2, int32_t y2, const int32_t screen_width,
                                const int32_t screen_height)
 {
 	const int32_t max_x = screen_width - 1;
@@ -36,14 +34,14 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		{
 			if (x2 < 0) break;
 			y1 -= static_cast<int32_t>(static_cast<double>(x1) * (y2 - static_cast<double>(y1)) /
-				(x2 - static_cast<double>(x1)));
+			                           (x2 - static_cast<double>(x1)));
 			x1 = 0;
 		}
 		else if (x1 > max_x)
 		{
 			if (x2 > max_x) break;
 			y1 -= static_cast<int32_t>((x1 - static_cast<double>(max_x)) * (y2 - static_cast<double>(y1)) /
-				(x2 - static_cast<double>(x1)));
+			                           (x2 - static_cast<double>(x1)));
 			x1 = max_x;
 		}
 
@@ -52,7 +50,7 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		{
 			if (y2 < 0) break;
 			x1 -= static_cast<int32_t>(static_cast<double>(y1) * (x2 - static_cast<double>(x1)) /
-				(y2 - static_cast<double>(y1)));
+			                           (y2 - static_cast<double>(y1)));
 			y1 = 0;
 			if (x1 < 0 || x1 > max_x) break;
 		}
@@ -60,7 +58,7 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		{
 			if (y2 > max_y) break;
 			x1 -= static_cast<int32_t>((y1 - static_cast<double>(max_y)) * (x2 - static_cast<double>(x1)) /
-				(y2 - static_cast<double>(y1)));
+			                           (y2 - static_cast<double>(y1)));
 			y1 = max_y;
 			if (x1 < 0 || x1 > max_x) break;
 		}
@@ -69,13 +67,13 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		if (x2 < 0)
 		{
 			y2 -= static_cast<int32_t>(static_cast<double>(x2) * (y1 - static_cast<double>(y2)) /
-				(x1 - static_cast<double>(x2)));
+			                           (x1 - static_cast<double>(x2)));
 			x2 = 0;
 		}
 		else if (x2 > max_x)
 		{
 			y2 -= static_cast<int32_t>((x2 - static_cast<double>(max_x)) * (y1 - static_cast<double>(y2)) /
-				(x1 - static_cast<double>(x2)));
+			                           (x1 - static_cast<double>(x2)));
 			x2 = max_x;
 		}
 
@@ -83,21 +81,20 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 		if (y2 < 0)
 		{
 			x2 -= static_cast<int32_t>(static_cast<double>(y2) * (x1 - static_cast<double>(x2)) /
-				(y1 - static_cast<double>(y2)));
+			                           (y1 - static_cast<double>(y2)));
 			y2 = 0;
 			if (x2 < 0 || x2 > max_x) break;
 		}
 		else if (y2 > max_y)
 		{
 			x2 -= static_cast<int32_t>((y2 - static_cast<double>(max_y)) * (x1 - static_cast<double>(x2)) /
-				(y1 - static_cast<double>(y2)));
+			                           (y1 - static_cast<double>(y2)));
 			y2 = max_y;
 			if (x2 < 0 || x2 > max_x) break;
 		}
 
 		return {true, x1, y1, x2, y2};
-	}
-	while (false);
+	} while (false);
 
 	return {false, x1, y1, x2, y2};
 }
@@ -107,8 +104,7 @@ static ClipLineResult ClipLine(int32_t x1, int32_t y1,
 void NextSceneryType(void)
 {
 	current_scenery_type++;
-	if (current_scenery_type > MAX_SCENERY_TYPE)
-		current_scenery_type = MIN_SCENERY_TYPE;
+	if (current_scenery_type > MAX_SCENERY_TYPE) current_scenery_type = MIN_SCENERY_TYPE;
 }
 
 int32_t GetSceneryType(void)
@@ -118,15 +114,10 @@ int32_t GetSceneryType(void)
 
 void SetSceneryType(const int32_t type)
 {
-	if (type >= MIN_SCENERY_TYPE && type <= MAX_SCENERY_TYPE)
-		current_scenery_type = type;
+	if (type >= MIN_SCENERY_TYPE && type <= MAX_SCENERY_TYPE) current_scenery_type = type;
 }
 
-
-static void DrawHorizon(SoftwareRenderer& r,
-                        double viewpoint_y,
-                        double viewpoint_x_angle,
-                        double viewpoint_z_angle)
+static void DrawHorizon(SceneRenderer& r, double viewpoint_y, double viewpoint_x_angle, double viewpoint_z_angle)
 {
 	bool upside_down = false;
 
@@ -139,7 +130,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 	};
 	HorizonPoint plane[2] = {
 		{-65536.0f, 0.0f, 65536.0f}, // left
-		{65536.0f, 0.0f, 65536.0f}, // right
+		{65536.0f, 0.0f, 65536.0f},  // right
 	};
 	COORD_2D screen_coords[2];
 
@@ -150,8 +141,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 	// When the rotated z values are negative (viewpoint pitched past the zenith
 	// or nadir) the resulting y values are negated so the y adjustment must
 	// also change sign.
-	const bool inverted_pitch =
-		viewpoint_x_angle >= 0.5f * SCR_PI && viewpoint_x_angle < 1.5f * SCR_PI;
+	const bool inverted_pitch = viewpoint_x_angle >= 0.5f * SCR_PI && viewpoint_x_angle < 1.5f * SCR_PI;
 	// viewpoint_y is in render-space world units.
 	double y_adjust = viewpoint_y;
 	if (!inverted_pitch) y_adjust = -y_adjust;
@@ -200,8 +190,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 	const int32_t max_y = screen_height - 1;
 	int32_t ytop = 0, ybottom = 0, colour_index = 0;
 
-	if (x1 > x2 || (x1 == x2 && y1 > y2))
-		upside_down = !upside_down;
+	if (x1 > x2 || (x1 == x2 && y1 > y2)) upside_down = !upside_down;
 
 	auto clip = ClipLine(x1, y1, x2, y2, screen_width, screen_height);
 	bool on_screen = clip.on_screen;
@@ -229,9 +218,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 
 	// Special check for when line has been clipped to a single
 	// pixel (i.e. one of the four corners of the screen)
-	if (xs == xl && ys == yl)
-		on_screen = false;
-
+	if (xs == xl && ys == yl) on_screen = false;
 
 	if (on_screen)
 	{
@@ -251,10 +238,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 			else if (ys > 0)
 			{
 				ytop = 0;
-				ybottom = (xs == min_x && xl == max_x) ||
-				          (xs == max_x && xl == min_x)
-					          ? ys - 1
-					          : ys;
+				ybottom = (xs == min_x && xl == max_x) || (xs == max_x && xl == min_x) ? ys - 1 : ys;
 				draw = true;
 			}
 		}
@@ -271,8 +255,7 @@ static void DrawHorizon(SoftwareRenderer& r,
 					draw = true;
 				}
 			}
-			else if ((xs == min_x && xl == max_x) ||
-				(xs == max_x && xl == min_x))
+			else if ((xs == min_x && xl == max_x) || (xs == max_x && xl == min_x))
 			{
 				ytop = 0;
 				ybottom = ys;
@@ -280,16 +263,14 @@ static void DrawHorizon(SoftwareRenderer& r,
 			}
 		}
 
-		if (draw)
-			r.FillRect(min_x, ytop, max_x, ybottom, SCRGB(colour_index));
+		if (draw) r.FillRect(min_x, ytop, max_x, ybottom, SCRGB(colour_index));
 
 		// Draw bottom rectangle — fill the area that the top rectangle missed
 		colour_index = colour_index == SKY_COLOUR ? GROUND_COLOUR : SKY_COLOUR;
 
 		if (draw)
 		{
-			if (ybottom < max_y)
-				r.FillRect(min_x, ybottom + 1, max_x, max_y, SCRGB(colour_index));
+			if (ybottom < max_y) r.FillRect(min_x, ybottom + 1, max_x, max_y, SCRGB(colour_index));
 		}
 		else
 		{
@@ -303,18 +284,13 @@ static void DrawHorizon(SoftwareRenderer& r,
 		const bool off_left = x1 <= min_x && x2 <= min_x;
 		const bool off_right = x1 >= max_x && x2 >= max_x;
 
-		if (off_top)
-			colour_index = upside_down ? SKY_COLOUR : GROUND_COLOUR;
-		else if (off_bottom)
-			colour_index = upside_down ? GROUND_COLOUR : SKY_COLOUR;
-		else if (off_left)
-			colour_index = y1 > y2 ? GROUND_COLOUR : SKY_COLOUR;
-		else if (off_right)
-			colour_index = y1 > y2 ? SKY_COLOUR : GROUND_COLOUR;
+		if (off_top) colour_index = upside_down ? SKY_COLOUR : GROUND_COLOUR;
+		else if (off_bottom) colour_index = upside_down ? GROUND_COLOUR : SKY_COLOUR;
+		else if (off_left) colour_index = y1 > y2 ? GROUND_COLOUR : SKY_COLOUR;
+		else if (off_right) colour_index = y1 > y2 ? SKY_COLOUR : GROUND_COLOUR;
 
 		r.FillRect(min_x, 0, max_x, max_y, SCRGB(colour_index));
 	}
-
 
 	// draw sloping ground section
 	if (on_screen && y1 != y2)
@@ -380,11 +356,9 @@ static void DrawHorizon(SoftwareRenderer& r,
 			}
 		}
 
-		if (sides >= 3)
-			r.DrawScreenTriangleFan(points, sides, SCRGB(GROUND_COLOUR));
+		if (sides >= 3) r.DrawScreenTriangleFan(points, sides, SCRGB(GROUND_COLOUR));
 	}
 }
-
 
 // ─── Scenery data ───────────────────────────────────────────────────────────
 
@@ -401,6 +375,7 @@ struct Scenery
 	const int32_t* polygons;
 };
 
+// clang-format off
 // Scenery angular positions around the horizon (range 0-255)
 static const int32_t scenery_positions[NUM_SCENERY_OBJECTS] = {
 	0x05, 0x0f, 0x15, 0x1f, 0x25, 0x2f, 0x35, 0x3f,
@@ -505,9 +480,10 @@ static const int32_t snowcapped_p[] = {
 };
 static const int32_t building_p[] = {15, 4, 1, 0, 3, 4, 14, 4, 2, 1, 4, 5};
 static const int32_t lake_p[] = {6, 4, 2, 1, 0, 3};
+// clang-format on
 
 // Macro to define a Scenery entry from a coord array
-#define SCENERY_DEF(coords, nPoly, poly) { coords, static_cast<int32_t>(sizeof(coords) / sizeof(coords[0])), nPoly, poly }
+#define SCENERY_DEF(coords, nPoly, poly) {coords, static_cast<int32_t>(std::size(coords)), nPoly, poly}
 
 static const Scenery scenery_objects[] = {
 	SCENERY_DEF(standard1_c, 1, standard_p),
@@ -541,11 +517,8 @@ static const Scenery scenery_objects[] = {
 
 // ─── DrawScenery ────────────────────────────────────────────────────────────
 
-static void DrawScenery(SoftwareRenderer& r,
-                        const double viewpoint_y,
-                        const double viewpoint_x_angle,
-                        const double viewpoint_y_angle,
-                        const double viewpoint_z_angle)
+static void DrawScenery(SceneRenderer& r, const double viewpoint_y, const double viewpoint_x_angle,
+                        const double viewpoint_y_angle, const double viewpoint_z_angle)
 {
 	const int32_t* scenery_numbers = scenery_types[current_scenery_type];
 
@@ -590,7 +563,7 @@ static void DrawScenery(SoftwareRenderer& r,
 			double y = -(scenery.coords[i].y * SCENERY_X_Y_SCALE_FACTOR);
 			double z = scenery.coords[i].z;
 
-			y -= vp_y_offset; // reduce using PC_FACTOR
+			y -= vp_y_offset;                  // reduce using PC_FACTOR
 			y += 2 * SCENERY_X_Y_SCALE_FACTOR; // prevent sky showing through
 
 			// rotate about y axis
@@ -623,8 +596,7 @@ static void DrawScenery(SoftwareRenderer& r,
 			screen_coords[i].y = static_cast<int32_t>(rot_y * inv_z) + screen_height / 2;
 		}
 
-		if (!visible)
-			continue;
+		if (!visible) continue;
 
 		// Draw scenery object polygons
 		const int32_t* polygons = scenery.polygons;
@@ -643,19 +615,15 @@ static void DrawScenery(SoftwareRenderer& r,
 			}
 
 			// draw current polygon
-			if (sides >= 3)
-				r.DrawScreenTriangleFan(points, sides, SCRGB(SCR_BASE_COLOUR + colour));
+			if (sides >= 3) r.DrawScreenTriangleFan(points, sides, SCRGB(SCR_BASE_COLOUR + colour));
 		}
 	}
 }
 
 // ─── DrawBackdrop ───────────────────────────────────────────────────────────
 
-void DrawBackdrop(SoftwareRenderer& r,
-                  const double viewpoint_y,
-                  const double viewpoint_x_angle,
-                  const double viewpoint_y_angle,
-                  const double viewpoint_z_angle)
+void DrawBackdrop(SceneRenderer& r, const double viewpoint_y, const double viewpoint_x_angle,
+                  const double viewpoint_y_angle, const double viewpoint_z_angle)
 {
 	DrawHorizon(r, viewpoint_y, viewpoint_x_angle, viewpoint_z_angle);
 	DrawScenery(r, viewpoint_y, viewpoint_x_angle, viewpoint_y_angle, viewpoint_z_angle);

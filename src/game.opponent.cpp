@@ -7,7 +7,7 @@
 
 using namespace std::string_view_literals;
 
-#define	OPPONENT_SHADOW
+#define OPPONENT_SHADOW
 
 static constexpr int32_t NUM_X_SPANS = 32;
 
@@ -20,8 +20,14 @@ enum OppWheelPosition
 };
 
 // Indices into opp_steering[] array
-enum { STEER_LEFT = 0, STEER_RIGHT = 1, STEER_COUNT = 2 };
+enum
+{
+	STEER_LEFT = 0,
+	STEER_RIGHT = 1,
+	STEER_COUNT = 2
+};
 
+// clang-format off
 uint8_t opponents_speed_values[NUM_TRACKS][MAX_PIECES_PER_TRACK] =
 
 	// opponents_speed_values (initialized below)
@@ -84,7 +90,9 @@ uint8_t opponents_speed_values[NUM_TRACKS][MAX_PIECES_PER_TRACK] =
 			0x6a, 0x60, 0x56, 0x56, 0x56, 0x7e, 0x7e, 0x74, 0x6a, 0x60, 0x56, 0x56, 0x5a, 0x52
 		}
 	};
+// clang-format on
 
+// clang-format off
 std::wstring_view opponentNames[NUM_OPPONENTS] =
 {
 	L"Hot Rod"sv,
@@ -99,6 +107,7 @@ std::wstring_view opponentNames[NUM_OPPONENTS] =
 	L"Jumping Jack"sv,
 	L"Road Hog"sv
 };
+// clang-format on
 
 std::wstring_view GetOpponentName(const int32_t opponentID)
 {
@@ -113,8 +122,7 @@ static constexpr uint8_t UNUSED4 = 16;
 static constexpr uint8_t PUSH_PLAYER = 32;
 static constexpr uint8_t UNUSED6 = 64;
 
-static uint8_t opponent_attributes[NUM_OPPONENTS] =
-{
+static uint8_t opponent_attributes[NUM_OPPONENTS] = {
 	// Hot Rod
 	PUSH_PLAYER | OBSTRUCTS_PLAYER,
 	// Whizz Kid
@@ -136,10 +144,11 @@ static uint8_t opponent_attributes[NUM_OPPONENTS] =
 	// Jumping Jack
 	UNUSED4,
 	// Road Hog
-	DRIVES_NEAR_EDGE
+	DRIVES_NEAR_EDGE,
 };
 
 // Values for each track
+// clang-format off
 static uint8_t opp_track_speed_values[] =
 {
 	// Standard league
@@ -150,6 +159,7 @@ static uint8_t opp_track_speed_values[] =
 	0x07, 0x03, 0x03, 0x03, 0x03, 0x03, 0x07, 0x03,
 	0x66, 0x57, 0x57, 0x59, 0x59, 0x69, 0x62, 0x64
 };
+// clang-format on
 
 static int32_t opponents_distance_into_section;
 static int32_t opponents_road_x_position;
@@ -157,7 +167,7 @@ static int32_t opponents_road_x_position;
 // Three co-ordinates needed for Opponent (as per original Amiga StuntCarRacer)
 static COORD_3D opp_rear_left_road_pos;
 static COORD_3D opp_rear_right_road_pos;
-static double opp_front_road_pos_y; //X,Z not needed
+static double opp_front_road_pos_y; // X,Z not needed
 
 // Additional co-ordinates needed for PC StuntCarRacer (for calculating opponent orientation)
 static COORD_3D opp_front_left_road_pos;
@@ -221,11 +231,8 @@ static double CalculateOpponentsRoadWheelHeight(const SurfaceCoords& sc, int32_t
 static void OpponentMovement(const TrackState& t, GameState& player);
 
 static void UpdateOpponentsActualWheelHeights(const TrackState& t, const GameState& game);
-static WheelDiffResult CalculateWheelDifference(double road_height,
-                                                double actual_height,
-                                                double height_adjust,
-                                                double old_difference,
-                                                int32_t touching_road);
+static WheelDiffResult CalculateWheelDifference(double road_height, double actual_height, double height_adjust,
+                                                double old_difference, int32_t touching_road);
 static double LimitOpponentWheels(double max_difference, int32_t wheel1, int32_t wheel2);
 static void AverageWheelYSpeeds(int32_t wheel1, int32_t wheel2);
 
@@ -263,10 +270,7 @@ static void ResetOpponent(GameState& game)
 	game.opponent_behind_player = false;
 }
 
-OpponentPose OpponentBehaviour(
-	TrackState& track,
-	GameState& game,
-	const bool oppPaused)
+OpponentPose OpponentBehaviour(TrackState& track, GameState& game, const bool oppPaused)
 {
 	double opponent_x_angle = 0.0f, opponent_y_angle = 0.0f, opponent_z_angle = 0.0f;
 
@@ -302,8 +306,7 @@ OpponentPose OpponentBehaviour(
 		CalculateDistancesBetweenPlayers(track, game);
 		OpponentPlayerInteraction(track, game);
 	}
-	else
-		CalculateDistancesBetweenPlayers(track, game);
+	else CalculateDistancesBetweenPlayers(track, game);
 
 	CalculateOpponentsRoadWheelPositions(game, track);
 
@@ -315,7 +318,8 @@ OpponentPose OpponentBehaviour(
 	 * Calculate opponent's x position
 	 */
 	const double opponent_x = (opp_front_left_road_pos.x + opp_front_right_road_pos.x + opp_rear_left_road_pos.x +
-		opp_rear_right_road_pos.x) / 4.0;
+	                           opp_rear_right_road_pos.x) /
+	                          4.0;
 
 	// Calculate opponent's y position (visible height = max of road and actual)
 	const double vis_rear_left_y = std::max(opp_rear_left_road_pos.y, opp_actual_height[REAR_LEFT]);
@@ -332,7 +336,8 @@ OpponentPose OpponentBehaviour(
 	 * Calculate opponent's z position
 	 */
 	const double opponent_z = (opp_front_left_road_pos.z + opp_front_right_road_pos.z + opp_rear_left_road_pos.z +
-		opp_rear_right_road_pos.z) / 4.0;
+	                           opp_rear_right_road_pos.z) /
+	                          4.0;
 
 	//
 	// Calculate opponent's new angles
@@ -362,6 +367,7 @@ OpponentPose OpponentBehaviour(
 	opponent_z_angle = atan2(-yd, carxd);
 
 	// output opponent values for use by functions that draw the world
+	// clang-format off
 	return {
 		opponent_x,
 		-(opponent_y * GameState::LOCAL_Y_FACTOR),
@@ -370,17 +376,15 @@ OpponentPose OpponentBehaviour(
 		opponent_y_angle,
 		opponent_z_angle
 	};
+	// clang-format on
 }
 
 // Opponent steering state: [STEER_LEFT] = left z-shift, [STEER_RIGHT] = right z-shift,
 // [STEER_COUNT] = random steering countdown
 static int32_t opp_steering[3] = {0, 0, 0};
 
-static int32_t opponents_x_spans[NUM_X_SPANS] =
-{
-	27, 27, 27, 27, 27, 26, 26, 26, 25, 25, 25, 24, 23, 23, 22, 21, 20, 19, 18, 17, 15, 14, 11, 9, 7, 7, 7, 7, 7, 7, 7,
-	7
-};
+static int32_t opponents_x_spans[NUM_X_SPANS] = {27, 27, 27, 27, 27, 26, 26, 26, 25, 25, 25, 24, 23, 23, 22, 21,
+                                                 20, 19, 18, 17, 15, 14, 11, 9,  7,  7,  7,  7,  7,  7,  7,  7};
 
 // All three road heights tested against Amiga
 static void CalculateOpponentsRoadWheelPositions(const GameState& game, const TrackState& t)
@@ -537,7 +541,7 @@ static void CalculateOpponentsRoadWheelPositions(const GameState& game, const Tr
 	segment = distance >> 8;
 	sc = GetSurfaceCoords(t, piece, segment);
 
-	sz = distance & 0xff; // z position of front wheel
+	sz = distance & 0xff;                  // z position of front wheel
 	sx = opponents_road_x_position & 0xff; // x position of front wheel
 
 	// Calculate front road y co-ordinate (as per Amiga opp.front.road.height)
@@ -616,14 +620,12 @@ static double CalculateOpponentsRoadWheelHeight(const SurfaceCoords& sc, const i
 	return y / 512.0;
 }
 
-
 // Tested against Amiga
 static void OpponentMovement(const TrackState& t, GameState& game)
 {
 	static int32_t byte_count = 0;
 
-	if (!game.drop_start_done)
-		return;
+	if (!game.drop_start_done) return;
 
 	UpdateOpponentsActualWheelHeights(t, game);
 	RandomizeOpponentsSteering(game, t);
@@ -667,40 +669,30 @@ static void UpdateOpponentsActualWheelHeights(const TrackState& t, const GameSta
 	opp_smallest_difference = -32768.0;
 
 	if (t.Track[game.opponents_current_piece].type & 0x80) // curve
-		height_adjust = 124; // increase collision when on a curve
-	else
-		height_adjust = 40;
+		height_adjust = 124;                               // increase collision when on a curve
+	else height_adjust = 40;
 
 	int32_t touching_road = 0;
 
 	{
-		const auto r = CalculateWheelDifference(opp_rear_left_road_pos.y,
-		                                        opp_actual_height[REAR_LEFT],
-		                                        height_adjust,
-		                                        opp_old_rear_left_difference,
-		                                        touching_road);
+		const auto r = CalculateWheelDifference(opp_rear_left_road_pos.y, opp_actual_height[REAR_LEFT], height_adjust,
+		                                        opp_old_rear_left_difference, touching_road);
 		opp_new_rear_left_difference = r.new_difference;
 		opp_old_rear_left_difference = r.old_difference;
 		touching_road = r.touching_road;
 	}
 
 	{
-		const auto r = CalculateWheelDifference(opp_rear_right_road_pos.y,
-		                                        opp_actual_height[REAR_RIGHT],
-		                                        height_adjust,
-		                                        opp_old_rear_right_difference,
-		                                        touching_road);
+		const auto r = CalculateWheelDifference(opp_rear_right_road_pos.y, opp_actual_height[REAR_RIGHT], height_adjust,
+		                                        opp_old_rear_right_difference, touching_road);
 		opp_new_rear_right_difference = r.new_difference;
 		opp_old_rear_right_difference = r.old_difference;
 		touching_road = r.touching_road;
 	}
 
 	{
-		const auto r = CalculateWheelDifference(opp_front_road_pos_y,
-		                                        opp_actual_height[FRONT],
-		                                        height_adjust,
-		                                        opp_old_front_difference,
-		                                        touching_road);
+		const auto r = CalculateWheelDifference(opp_front_road_pos_y, opp_actual_height[FRONT], height_adjust,
+		                                        opp_old_front_difference, touching_road);
 		opp_new_front_difference = r.new_difference;
 		opp_old_front_difference = r.old_difference;
 		touching_road = r.touching_road;
@@ -713,9 +705,10 @@ static void UpdateOpponentsActualWheelHeights(const TrackState& t, const GameSta
 	const double total_diff = opp_new_rear_left_difference + opp_new_rear_right_difference + opp_new_front_difference;
 
 	opp_y_acceleration[REAR_LEFT] = (total_diff + opp_new_rear_left_difference + opp_new_rear_left_difference * 4.0) /
-		8.0;
-	opp_y_acceleration[REAR_RIGHT] = (total_diff + opp_new_rear_right_difference + opp_new_rear_right_difference * 4.0)
-		/ 8.0;
+	                                8.0;
+	opp_y_acceleration[REAR_RIGHT] = (total_diff + opp_new_rear_right_difference +
+	                                  opp_new_rear_right_difference * 4.0) /
+	                                 8.0;
 	opp_y_acceleration[FRONT] = (total_diff + opp_new_front_difference + opp_new_front_difference * 4.0) / 8.0;
 
 	// Randomly make opponent do a wheelie (if they have that attribute)
@@ -726,8 +719,7 @@ static void UpdateOpponentsActualWheelHeights(const TrackState& t, const GameSta
 		// we use here that semantics maps to "both magnitudes < 4".
 		if (std::abs(opp_y_speed[FRONT]) < 4.0 && std::abs(opp_y_acceleration[FRONT]) < 4.0)
 		{
-			if ((rand() & 0xf) == 0)
-				opp_y_speed[FRONT] = 160; // Make opponent do a wheelie
+			if ((rand() & 0xf) == 0) opp_y_speed[FRONT] = 160; // Make opponent do a wheelie
 		}
 	}
 
@@ -745,19 +737,15 @@ static void UpdateOpponentsActualWheelHeights(const TrackState& t, const GameSta
 	if (diff < 0)
 		// Use rear right wheel (because this is higher than rear left)
 		LimitOpponentWheels(368.0, REAR_RIGHT, FRONT);
-	else
-		LimitOpponentWheels(368.0, REAR_LEFT, FRONT);
+	else LimitOpponentWheels(368.0, REAR_LEFT, FRONT);
 }
 
-static WheelDiffResult CalculateWheelDifference(const double road_height,
-                                                const double actual_height,
-                                                const double height_adjust,
-                                                const double old_difference,
+static WheelDiffResult CalculateWheelDifference(const double road_height, const double actual_height,
+                                                const double height_adjust, const double old_difference,
                                                 int32_t touching_road)
 {
 	double new_difference = road_height - actual_height;
-	if (new_difference > opp_smallest_difference)
-		opp_smallest_difference = new_difference;
+	if (new_difference > opp_smallest_difference) opp_smallest_difference = new_difference;
 
 	new_difference += height_adjust;
 	if (new_difference < 0)
@@ -788,10 +776,8 @@ static double LimitOpponentWheels(const double max_difference, const int32_t whe
 	if (drop < 0)
 	{
 		// Drop highest wheel
-		if (diff >= 0)
-			opp_actual_height[wheel1] += drop;
-		else
-			opp_actual_height[wheel2] += drop;
+		if (diff >= 0) opp_actual_height[wheel1] += drop;
+		else opp_actual_height[wheel2] += drop;
 
 		if (wheel2 != FRONT)
 		{
@@ -809,12 +795,10 @@ static double LimitOpponentWheels(const double max_difference, const int32_t whe
 		AverageWheelYSpeeds(REAR_LEFT, REAR_RIGHT);
 	}
 
-	if (wheel2 != FRONT)
-		return diff; // Finish if first call to function
+	if (wheel2 != FRONT) return diff; // Finish if first call to function
 
 	// Following is reached on second call to function
-	if (opp_touching_road)
-		return diff;
+	if (opp_touching_road) return diff;
 
 	// Adjust wheel y speeds when opponent in air, possibly to make the car pitch forwards
 	const double speed_diff = opp_y_speed[wheel1] - opp_y_speed[FRONT];
@@ -842,19 +826,15 @@ static int32_t opp_prev_piece_type = 0;
 static int32_t opp_steering_table_offset = 0;
 static int32_t opp_steering_z_delta = 0;
 
-static int32_t steering_sine_table[] =
-{
-	0x20, 0x50, 0x60, 0x70, 0x70, 0x60, 0x50, 0x20,
-	-0x20, -0x50, -0x60, -0x70, -0x70, -0x60, -0x50, -0x20
-};
+static int32_t steering_sine_table[] = {0x20,  0x50,  0x60,  0x70,  0x70,  0x60,  0x50,  0x20,
+                                        -0x20, -0x50, -0x60, -0x70, -0x70, -0x60, -0x50, -0x20};
 
 // Tested against Amiga
 static void RandomizeOpponentsSteering(const GameState& game, const TrackState& t)
 {
 	int32_t d2;
 
-	if (!opp_touching_road)
-		return;
+	if (!opp_touching_road) return;
 
 	int32_t d1 = 0;
 	opp_steering[STEER_LEFT] = opp_steering[STEER_RIGHT] = 0;
@@ -886,9 +866,8 @@ static void RandomizeOpponentsSteering(const GameState& game, const TrackState& 
 		// No active steering: possibly initiate new random steering
 		d2 = game.opponents_current_piece;
 		if (!(opponents_speed_values[t.TrackID][d2] & 0x80) // not a forced-speed piece
-			&& !game.opponent_behind_player
-			&& !(t.Track[game.opponents_current_piece].type & 0x80) // not a curve
-			&& opp_prev_piece_type & 0x80) // previous piece was curved
+		    && !game.opponent_behind_player && !(t.Track[game.opponents_current_piece].type & 0x80) // not a curve
+		    && opp_prev_piece_type & 0x80) // previous piece was curved
 		{
 			d2 = 8;
 			if (opp_prev_piece_type & 0x40) // diagonal piece (45 degrees)
@@ -897,8 +876,7 @@ static void RandomizeOpponentsSteering(const GameState& game, const TrackState& 
 			opp_steering_table_offset = d2;
 
 			const int32_t value = rand() & 0x1f;
-			if (game.opponentsID >= value)
-				opp_steering[STEER_COUNT] = 16;
+			if (game.opponentsID >= value) opp_steering[STEER_COUNT] = 16;
 		}
 	}
 
@@ -912,27 +890,22 @@ static void GetOpponentsEngineAcceleration()
 {
 	int32_t power = opp_engine_power;
 
-	if (opp_steering[STEER_COUNT] != 0)
-		power -= 25;
+	if (opp_steering[STEER_COUNT] != 0) power -= 25;
 
-	if (opp_touching_road)
-		opponents_engine_z_acceleration = power;
-	else
-		opponents_engine_z_acceleration = 0;
+	if (opp_touching_road) opponents_engine_z_acceleration = power;
+	else opponents_engine_z_acceleration = 0;
 }
 
 // Tested against Amiga
 static void AdjustOpponentsEngineAcceleration(const GameState& game, const TrackState& t)
 {
-	if (!opp_touching_road)
-		return;
+	if (!opp_touching_road) return;
 
 	const int32_t speed_value = opponents_speed_values[t.TrackID][game.opponents_current_piece];
 	int32_t speed = speed_value;
 	if ((speed & 0x80) == 0)
 	{
-		if (speed > opponents_max_speed)
-			speed = opponents_max_speed;
+		if (speed > opponents_max_speed) speed = opponents_max_speed;
 	}
 
 	const int32_t opponents_required_z_speed = speed & 0x7f;
@@ -949,8 +922,7 @@ static void AdjustOpponentsEngineAcceleration(const GameState& game, const Track
 		// Speed is greater than required speed
 		opponents_required_z_speed_reached = true;
 		opponents_engine_z_acceleration = -opponents_engine_z_acceleration;
-		if (speed < 14)
-			return;
+		if (speed < 14) return;
 	}
 
 	if (speed_value & 0x80 || speed >= 0 || !opponents_required_z_speed_reached)
@@ -959,8 +931,7 @@ static void AdjustOpponentsEngineAcceleration(const GameState& game, const Track
 		return;
 	}
 
-	if (speed >= -2)
-		return; // Value is -2 or -1
+	if (speed >= -2) return; // Value is -2 or -1
 
 	opponents_required_z_speed_reached = false;
 	opponents_engine_z_acceleration *= 2;
@@ -1010,13 +981,13 @@ static void UpdateOpponentsZSpeed(const TrackState& t, const GameState& game)
 	if (opp_touching_road)
 	{
 		const int32_t d = static_cast<int32_t>((opp_rear_left_road_pos.y + opp_rear_right_road_pos.y) / 2 -
-			opp_front_road_pos_y);
+		                                       opp_front_road_pos_y);
 		// d is -'ve when opponent pitched backwards, +'ve when pitched forwards
 
 		int32_t pitch = abs(d);
 		if (pitch >= 512) pitch = 510;
 
-		pitch >>= 1; // pitch value / 2
+		pitch >>= 1;                           // pitch value / 2
 		int32_t adjust = pitch + (pitch >> 2); // (5 * pitch value) / 8
 
 		if (d < 0) adjust = -adjust;
@@ -1030,7 +1001,6 @@ static void UpdateOpponentsZSpeed(const TrackState& t, const GameState& game)
 	opponents_z_speed += acceleration;
 	if (opponents_z_speed < 0) opponents_z_speed = 0;
 }
-
 
 static int32_t difference_between_players = 0;
 static int32_t smallest_distance_between_players = 0;
@@ -1071,27 +1041,22 @@ static void CalculateDistancesBetweenPlayers(const TrackState& t, GameState& pla
 		smallest_distance_between_players = abs_diff;
 		diff = -diff;
 	}
-	else
-		smallest_distance_between_players = opposite;
+	else smallest_distance_between_players = opposite;
 
 	player.opponent_behind_player = diff > 0;
 }
 
-
-int32_t CalculateIfWinning(const TrackState& track, const GameState& game,
-                           const int32_t start_finish_piece)
+int32_t CalculateIfWinning(const TrackState& track, const GameState& game, const int32_t start_finish_piece)
 {
 	int32_t result = game.lapNumber[OPPONENT] - game.lapNumber[PLAYER];
 	if (result != 0) // on different laps
 		return result;
 
 	int32_t p = game.player_current_piece - start_finish_piece;
-	if (p < 0)
-		p += track.NumTrackPieces;
+	if (p < 0) p += track.NumTrackPieces;
 
 	int32_t o = game.opponents_current_piece - start_finish_piece;
-	if (o < 0)
-		o += track.NumTrackPieces;
+	if (o < 0) o += track.NumTrackPieces;
 
 	result = o - p;
 	if (result != 0) // on different pieces
@@ -1106,13 +1071,11 @@ static int32_t x_difference, player_to_right;
 static int32_t cars_collided;
 static double car_to_car_x_acceleration, car_to_car_y_acceleration, car_to_car_z_acceleration;
 
-
 static bool CarToCarCollisionDetection(GameState& player)
 {
 	int32_t d0, d3;
 
-	if (!player.drop_start_done)
-		return false;
+	if (!player.drop_start_done) return false;
 
 	// Y difference check (when at least one car is not touching road)
 	if (!opp_touching_road || !player.touching_road)
@@ -1137,8 +1100,7 @@ static bool CarToCarCollisionDetection(GameState& player)
 		{
 			--collision_bounce_count;
 			d3 = 256 - d0;
-			if (d4 < 0)
-				d3 = -d3;
+			if (d4 < 0) d3 = -d3;
 
 			d3 *= 16;
 			car_to_car_y_acceleration = d3;
@@ -1156,8 +1118,7 @@ static bool CarToCarCollisionDetection(GameState& player)
 	{
 		d3 = 3;
 		d0 = opponents_z_speed - static_cast<int32_t>(player.player_z_speed);
-		if (d0 < 0)
-			d3 = -3;
+		if (d0 < 0) d3 = -3;
 
 		d0 >>= 1;
 		d0 += d3;
@@ -1168,9 +1129,10 @@ static bool CarToCarCollisionDetection(GameState& player)
 	cars_collided = 0x80;
 	collision_z_calculated = 0x80;
 
-	const int32_t damage = static_cast<int32_t>((512.0 + std::abs(car_to_car_x_acceleration) + std::abs(
-			car_to_car_y_acceleration)
-		+ std::abs(car_to_car_z_acceleration))) >> 8;
+	const int32_t damage = static_cast<int32_t>((512.0 + std::abs(car_to_car_x_acceleration) +
+	                                             std::abs(car_to_car_y_acceleration) +
+	                                             std::abs(car_to_car_z_acceleration))) >>
+	                       8;
 
 	player.rear_damage = std::min(player.rear_damage + damage, 255);
 	player.front_right_damage = std::min(player.front_right_damage + damage, 255);
@@ -1182,14 +1144,11 @@ static bool CarToCarCollisionDetection(GameState& player)
 
 static int32_t cars_collided_delay = 0;
 
-
 void CarToCarCollision(GameState& player, const SoundState& sound)
 {
-	if (cars_collided_delay > 0)
-		--cars_collided_delay;
+	if (cars_collided_delay > 0) --cars_collided_delay;
 
-	if (!cars_collided)
-		return;
+	if (!cars_collided) return;
 
 	cars_collided = 0;
 
@@ -1210,10 +1169,9 @@ void CarToCarCollision(GameState& player, const SoundState& sound)
 	car_to_car_y_acceleration = 0;
 	car_to_car_z_acceleration = 0;
 
-	// Play collision sound if necessary 
+	// Play collision sound if necessary
 
-	if (cars_collided_delay > 0)
-		return;
+	if (cars_collided_delay > 0) return;
 
 	SoundPlay(sound.HitCarSoundBuffer, false); // not looping
 
@@ -1221,7 +1179,6 @@ void CarToCarCollision(GameState& player, const SoundState& sound)
 }
 
 static int32_t opponents_suggested_road_x_position;
-
 
 // Tested against Amiga
 static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
@@ -1247,11 +1204,9 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 	{
 		// Player and opponent at least $100 from each other (ahead or behind)
 		d2 = 64;
-		if (opponent_attributes[player.opponentsID] & DRIVES_NEAR_EDGE)
-			d2 = 110;
+		if (opponent_attributes[player.opponentsID] & DRIVES_NEAR_EDGE) d2 = 110;
 
-		if (player.opponentsID & 1)
-			d2 = 255 - d2; // to other side of road
+		if (player.opponentsID & 1) d2 = 255 - d2; // to other side of road
 
 		opponents_suggested_road_x_position = d2;
 	};
@@ -1268,8 +1223,7 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 		// Determine if player is close to opponent
 		// Either: Opponent less than 64 behind player
 		// OR Player less than 64 behind and less than 50 to the left or right of opponent
-		if (d0 < 64 && (player.opponent_behind_player || x_difference < 50))
-			player.player_close_to_opponent = true;
+		if (d0 < 64 && (player.opponent_behind_player || x_difference < 50)) player.player_close_to_opponent = true;
 
 		// Check for car-to-car collision (very close proximity)
 		bool collisionDetected = false;
@@ -1292,9 +1246,8 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 		if (collisionDetected || (smallest_distance_between_players & 0xff) < 24)
 		{
 			// Close range: move to one side or set far away position
-			if (opponent_attributes[player.opponentsID] & DRIVES_NEAR_EDGE
-				&& !player.opponent_behind_player
-				&& (smallest_distance_between_players & 0xff) >= 14)
+			if (opponent_attributes[player.opponentsID] & DRIVES_NEAR_EDGE && !player.opponent_behind_player &&
+			    (smallest_distance_between_players & 0xff) >= 14)
 			{
 				setFarAwayPosition();
 			}
@@ -1342,10 +1295,8 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 		int32_t piece = player.opponents_current_piece;
 		for (int32_t count = 2; count > 0; count--)
 		{
-			d0 = GetPieceAngleAndTemplate(piece);
-			d0 &= 0xf; // templateNum
-			if (t.sections_car_can_be_put_on[d0] & 0x80)
-				opponents_suggested_road_x_position = 128; // middle of road
+			d0 = GetPieceAngleAndTemplate(piece) & 0xf;                                             // templateNum
+			if (t.sections_car_can_be_put_on[d0] & 0x80) opponents_suggested_road_x_position = 128; // middle of road
 
 			// go to next piece
 			piece++;
@@ -1360,32 +1311,26 @@ static void OpponentPlayerInteraction(const TrackState& t, GameState& player)
 		steerDelta = opponents_suggested_road_x_position - (opponents_road_x_position & 0xff);
 	}
 
-	if (steerDelta == 0)
-		return;
+	if (steerDelta == 0) return;
 
 	if (steerDelta < 0)
 	{
-		if (steerDelta >= -16)
-			return;
+		if (steerDelta >= -16) return;
 		d0 = -9;
 	}
 	else
 	{
-		if (steerDelta < 16)
-			return;
+		if (steerDelta < 16) return;
 		d0 = 9;
 	}
 
 	d0 += opponents_road_x_position & 0xff;
 
-	if (!opp_touching_road)
-		return;
+	if (!opp_touching_road) return;
 
-	if (d0 >= 225)
-		return;
+	if (d0 >= 225) return;
 
-	if (d0 < 32)
-		return;
+	if (d0 < 32) return;
 
 	opponents_road_x_position = d0;
 }
@@ -1396,12 +1341,9 @@ static void MoveOpponentToOneSide()
 {
 	const int32_t d0 = x_difference;
 
-	if (d0 >= 56)
-		return;
-	if (player_to_right & 0x80)
-		opponents_suggested_road_x_position = 32;
-	else
-		opponents_suggested_road_x_position = 256 - 32;
+	if (d0 >= 56) return;
+	if (player_to_right & 0x80) opponents_suggested_road_x_position = 32;
+	else opponents_suggested_road_x_position = 256 - 32;
 }
 
 // Tested against Amiga
@@ -1410,24 +1352,19 @@ static void OpponentPushPlayer(const GameState& player)
 {
 	int32_t d0 = x_difference;
 
-	if (d0 >= 56)
-		return;
+	if (d0 >= 56) return;
 
 	d0 = player.rear_wheel_surface_x_position;
 
 	if (player_to_right & 0x80)
 	{
-		if (d0 < 96)
-			opponents_suggested_road_x_position = 256 - 32;
-		else
-			opponents_suggested_road_x_position = 32;
+		if (d0 < 96) opponents_suggested_road_x_position = 256 - 32;
+		else opponents_suggested_road_x_position = 32;
 	}
 	else
 	{
-		if (d0 >= 256 - 96)
-			opponents_suggested_road_x_position = 32;
-		else
-			opponents_suggested_road_x_position = 256 - 32;
+		if (d0 >= 256 - 96) opponents_suggested_road_x_position = 32;
+		else opponents_suggested_road_x_position = 256 - 32;
 	}
 }
 
@@ -1439,8 +1376,7 @@ int32_t CalculateOpponentsDistance(const GameState& game)
 	dist += dist >> 2;
 	dist >>= 2;
 
-	if (game.opponent_behind_player)
-		dist = -dist;
+	if (game.opponent_behind_player) dist = -dist;
 
 	return dist;
 }

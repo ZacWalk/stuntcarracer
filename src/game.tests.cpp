@@ -1,10 +1,11 @@
 //
 // game.tests.cpp - Headless self-tests run via the /test command-line option.
 //
-// Drives the car physics directly (no window, no rendering, no sound) to
+// Drives the car physics directly (no window, no sound) to
 // verify behaviour such as the chain-drop start: the car should be lowered
 // onto the track surface and come to rest there, not fall through. The drawn menu
-// bar and window presentation policy are checked without opening a window.
+// bar, window presentation policy and the scene's painter's order are checked
+// without opening a window.
 //
 // All output is written to test_results.log in the working directory and to
 // stderr, and the process exits with code 0 on success or 1 on failure.
@@ -25,7 +26,10 @@
 #include <vector>
 
 #include "game.h"
+#include "render.scene.h"
 
+#include "libdesktop/ui/shell.h"
+#include "libdesktop/ui/test_support.h"
 
 // State owned by game.cpp / game.drive.cpp that the tests need to drive or
 // inspect. Declared extern here to keep the test isolated to this file.
@@ -126,10 +130,8 @@ namespace
 	// Run a single physics frame.
 	void StepFrame(CarVars& car)
 	{
-		const auto pose = CarBehaviour(g_trackState, g_gameState, g_soundState,
-		                               0,
-		                               car.x, car.y, car.z,
-		                               car.x_angle, car.y_angle, car.z_angle);
+		const auto pose = CarBehaviour(g_trackState, g_gameState, g_soundState, 0, car.x, car.y, car.z, car.x_angle,
+		                               car.y_angle, car.z_angle);
 		car.x = pose.x;
 		car.y = pose.y;
 		car.z = pose.z;
@@ -176,12 +178,10 @@ namespace
 		const int32_t start_chain = static_cast<int32_t>(g_gameState.chain_height_remaining);
 		const bool start_on_chains = g_gameState.on_chains != 0;
 		bool chain_position_stable = true;
-		bool chain_angles_level =
-			g_gameState.player_x_angle == 0 && g_gameState.player_z_angle == 0;
+		bool chain_angles_level = g_gameState.player_x_angle == 0 && g_gameState.player_z_angle == 0;
 
-		log.log("  After first frame: player_y=%.1f, chain_remaining=%d, on_chains=%d, touching_road=%d\n",
-		        start_y, start_chain, start_on_chains ? 1 : 0,
-		        g_gameState.touching_road ? 1 : 0);
+		log.log("  After first frame: player_y=%.1f, chain_remaining=%d, on_chains=%d, touching_road=%d\n", start_y,
+		        start_chain, start_on_chains ? 1 : 0, g_gameState.touching_road ? 1 : 0);
 
 		log.check(start_on_chains, "car is on chains after new-game frame");
 		log.check(start_chain > 0, "chain_height_remaining initialised positive");
@@ -201,14 +201,12 @@ namespace
 			StepFrame(car);
 			if (g_gameState.on_chains)
 			{
-				chain_position_stable = chain_position_stable &&
-					car.x == chain_x && car.z == chain_z;
-				chain_angles_level = chain_angles_level &&
-					g_gameState.player_x_angle == 0 && g_gameState.player_z_angle == 0;
+				chain_position_stable = chain_position_stable && car.x == chain_x && car.z == chain_z;
+				chain_angles_level = chain_angles_level && g_gameState.player_x_angle == 0 &&
+				                     g_gameState.player_z_angle == 0;
 			}
 
-			if (chainsDoneFrame < 0 && !g_gameState.on_chains)
-				chainsDoneFrame = i;
+			if (chainsDoneFrame < 0 && !g_gameState.on_chains) chainsDoneFrame = i;
 
 			// Car is "resting" when chains are done and it's touching the road.
 			if (chainsDoneFrame > 0 && g_gameState.touching_road && restingFrame < 0)
@@ -221,10 +219,8 @@ namespace
 			{
 				log.log("  frame %3d: player_y=%.1f, chain_remaining=%.1f, on_chains=%d, "
 				        "touching_road=%d, fl_road=%.1f, fl_actual=%.1f\n",
-				        i, car.y, g_gameState.chain_height_remaining,
-				        g_gameState.on_chains ? 1 : 0,
-				        g_gameState.touching_road ? 1 : 0,
-				        g_gameState.front_left_road_height,
+				        i, car.y, g_gameState.chain_height_remaining, g_gameState.on_chains ? 1 : 0,
+				        g_gameState.touching_road ? 1 : 0, g_gameState.front_left_road_height,
 				        g_gameState.front_left_actual_height);
 			}
 		}
@@ -234,12 +230,10 @@ namespace
 
 		log.log("  Final: player_y=%.1f, chain_remaining=%.1f, on_chains=%d, "
 		        "touching_road=%d, fl_road_height=%.1f, fl_actual_height=%.1f\n",
-		        settled_y, g_gameState.chain_height_remaining,
-		        g_gameState.on_chains ? 1 : 0,
-		        g_gameState.touching_road ? 1 : 0,
-		        g_gameState.front_left_road_height, g_gameState.front_left_actual_height);
-		log.log("  chains finished at frame: %d, first touched at frame: %d\n",
-		        chainsDoneFrame, restingFrame);
+		        settled_y, g_gameState.chain_height_remaining, g_gameState.on_chains ? 1 : 0,
+		        g_gameState.touching_road ? 1 : 0, g_gameState.front_left_road_height,
+		        g_gameState.front_left_actual_height);
+		log.log("  chains finished at frame: %d, first touched at frame: %d\n", chainsDoneFrame, restingFrame);
 
 		log.check(chainsDoneFrame > 0, "chains finished before timeout");
 		log.check(chain_position_stable, "chain placement does not drift in XZ");
@@ -248,11 +242,9 @@ namespace
 		log.check(restingFrame > 0, "car came into contact with road during sequence");
 
 		// Sanity: the car should be near the road, not far below it.
-		const double below = g_gameState.front_left_road_height -
-			g_gameState.front_left_actual_height;
+		const double below = g_gameState.front_left_road_height - g_gameState.front_left_actual_height;
 		log.log("  road - actual = %.1f (positive = car under road)\n", below);
-		log.check(below < 0x400,
-		          "car not deep below road surface (front_left road - actual < 0x400)");
+		log.check(below < 0x400, "car not deep below road surface (front_left road - actual < 0x400)");
 	}
 
 	// Reset all per-test global state to a clean baseline. Without this, lap
@@ -293,8 +285,7 @@ namespace
 		for (int i = 1; i <= kSettleMaxFrames && settleFrame < 0; ++i)
 		{
 			StepFrame(car);
-			if (!g_gameState.on_chains && g_gameState.touching_road)
-				settleFrame = i;
+			if (!g_gameState.on_chains && g_gameState.touching_road) settleFrame = i;
 		}
 		log.check(settleFrame > 0, "car settled on track before driving");
 
@@ -325,9 +316,7 @@ namespace
 		{
 			constexpr uint32_t input = KEY_P1_ACCEL | KEY_P1_BOOST;
 
-			const auto pose = CarBehaviour(g_trackState, g_gameState, g_soundState,
-			                               input,
-			                               car.x, car.y, car.z,
+			const auto pose = CarBehaviour(g_trackState, g_gameState, g_soundState, input, car.x, car.y, car.z,
 			                               car.x_angle, car.y_angle, car.z_angle);
 			car.x = pose.x;
 			car.y = pose.y;
@@ -348,15 +337,14 @@ namespace
 			if (g_gameState.touching_road && g_gameState.off_map_status == 0)
 			{
 				const int32_t below = static_cast<int32_t>(g_gameState.front_left_road_height -
-					g_gameState.front_left_actual_height);
+				                                           g_gameState.front_left_actual_height);
 				if (below > maxBelowRoad)
 				{
 					maxBelowRoad = below;
 					worstBelowFrame = i;
 				}
 			}
-			if (g_gameState.off_map_status > maxOffMap)
-				maxOffMap = g_gameState.off_map_status;
+			if (g_gameState.off_map_status > maxOffMap) maxOffMap = g_gameState.off_map_status;
 			const bool grounded = g_gameState.touching_road != 0;
 
 			if (g_gameState.player_current_piece != prevPiece)
@@ -364,8 +352,7 @@ namespace
 				++piecesAdvanced;
 				prevPiece = g_gameState.player_current_piece;
 			}
-			if (g_gameState.player_current_piece == g_trackState.HalfALapPiece)
-				visitedHalfway = true;
+			if (g_gameState.player_current_piece == g_trackState.HalfALapPiece) visitedHalfway = true;
 
 			// Jump detection: edge-trigger on grounded->airborne and airborne->grounded.
 			if (wasGrounded && !grounded)
@@ -391,35 +378,30 @@ namespace
 			if (landingSampleFramesLeft > 0 && grounded && g_gameState.off_map_status == 0)
 			{
 				const int32_t below = static_cast<int32_t>(g_gameState.front_left_road_height -
-					g_gameState.front_left_actual_height);
-				if (below > worstLandingPenetration)
-					worstLandingPenetration = below;
+				                                           g_gameState.front_left_actual_height);
+				if (below > worstLandingPenetration) worstLandingPenetration = below;
 				--landingSampleFramesLeft;
 			}
 
-			if (g_gameState.lapNumber[PLAYER] >= 2 && visitedHalfway && lapFrame < 0)
-				lapFrame = i;
+			if (g_gameState.lapNumber[PLAYER] >= 2 && visitedHalfway && lapFrame < 0) lapFrame = i;
 
 			// Stop the test once the car has clearly escaped the track - no point
 			// running thousands more frames of free-fall.
-			if (g_gameState.off_track_count > GameState::OFF_TRACK_LIMIT)
-				break;
+			if (g_gameState.off_track_count > GameState::OFF_TRACK_LIMIT) break;
 		}
 
 		log.log("  result: framesDriven=%d, piecesAdvanced=%d, lapNumber=%d, lapFrame=%d, "
 		        "visitedHalfway=%d, maxBelowRoad=0x%x@frame %d, maxOffMap=%d, "
 		        "finalPiece=%d/%d, halfwayPiece=%d, startLinePiece=%d, "
 		        "jumps=%d, longestAirFrames=%d, worstLandingPenetration=0x%x\n",
-		        framesDriven, piecesAdvanced, g_gameState.lapNumber[PLAYER], lapFrame,
-		        visitedHalfway ? 1 : 0, maxBelowRoad, worstBelowFrame, maxOffMap,
-		        g_gameState.player_current_piece, g_trackState.NumTrackPieces,
-		        g_trackState.HalfALapPiece, g_trackState.StartLinePiece,
-		        jumpsCompleted, longestAirFrames, worstLandingPenetration);
+		        framesDriven, piecesAdvanced, g_gameState.lapNumber[PLAYER], lapFrame, visitedHalfway ? 1 : 0,
+		        maxBelowRoad, worstBelowFrame, maxOffMap, g_gameState.player_current_piece, g_trackState.NumTrackPieces,
+		        g_trackState.HalfALapPiece, g_trackState.StartLinePiece, jumpsCompleted, longestAirFrames,
+		        worstLandingPenetration);
 
 		// Hard physics assertions: these must always hold.
 		log.check(piecesAdvanced > 0, "car moved forward through track pieces");
-		log.check(maxBelowRoad < kBelowRoadFailLimit,
-		          "car never sustained deep penetration into road while on it");
+		log.check(maxBelowRoad < kBelowRoadFailLimit, "car never sustained deep penetration into road while on it");
 		// Landing assertion: when the car has actually jumped, the landing should
 		// not place it deep inside the road. With road-height averaging removed,
 		// landings should settle near the spring equilibrium (~0x200) rather than
@@ -427,8 +409,7 @@ namespace
 		// for the unavoidable single-frame integration step.
 		if (jumpsCompleted > 0)
 		{
-			log.check(worstLandingPenetration <= 0x400,
-			          "jump landings settle near spring equilibrium (<=0x400)");
+			log.check(worstLandingPenetration <= 0x400, "jump landings settle near spring equilibrium (<=0x400)");
 		}
 	}
 
@@ -440,28 +421,21 @@ namespace
 		if (!ConvertAmigaTrack(g_trackState, trackId)) return;
 
 		const auto& t = g_trackState;
-		log.log("\n--- DumpTrackLayout: track %d (%d pieces) ---\n",
-		        trackId, t.NumTrackPieces);
-		log.log("  PlayersStart=%d  StartLine=%d  HalfALap=%d\n",
-		        t.PlayersStartPiece, t.StartLinePiece, t.HalfALapPiece);
+		log.log("\n--- DumpTrackLayout: track %d (%d pieces) ---\n", trackId, t.NumTrackPieces);
+		log.log("  PlayersStart=%d  StartLine=%d  HalfALap=%d\n", t.PlayersStartPiece, t.StartLinePiece,
+		        t.HalfALapPiece);
 
 		for (int p = 0; p < t.NumTrackPieces; ++p)
 		{
 			const auto& pc = t.Track[p];
-			const char* typeName =
-				pc.type == 0x00
-					? "STRAIGHT"
-					: pc.type == 0x40
-					? "DIAGONAL"
-					: pc.type == 0x80
-					? "CURVE_R "
-					: pc.type == 0xC0
-					? "CURVE_L "
-					: "????    ";
+			const char* typeName = pc.type == 0x00   ? "STRAIGHT"
+			                       : pc.type == 0x40 ? "DIAGONAL"
+			                       : pc.type == 0x80 ? "CURVE_R "
+			                       : pc.type == 0xC0 ? "CURVE_L "
+			                                         : "????    ";
 			log.log("  piece %2d: cube=(%2d,%2d) type=%s segs=%2d ang=%5d "
 			        "%s%s\n",
-			        p, pc.x, pc.z, typeName, pc.numSegments, pc.roughPieceAngle,
-			        pc.oppositeDirection ? "REV " : "    ",
+			        p, pc.x, pc.z, typeName, pc.numSegments, pc.roughPieceAngle, pc.oppositeDirection ? "REV " : "    ",
 			        pc.curveToLeft ? "L" : " ");
 		}
 
@@ -491,32 +465,29 @@ namespace
 		for (int piece = 0; piece < g_trackState.NumTrackPieces; ++piece)
 		{
 			const auto& track_piece = g_trackState.Track[piece];
-			if (track_piece.type & 0x80)
-				continue;
+			if (track_piece.type & 0x80) continue;
 
 			const double piece_x = track_piece.x * WORLD_CUBE_SIZE;
 			const double piece_z = track_piece.z * WORLD_CUBE_SIZE;
 			for (int segment = 0; segment < track_piece.numSegments; ++segment)
 			{
 				const int offset = segment * 4;
-				const double x = piece_x +
-					(track_piece.coords[offset].x + track_piece.coords[offset + 1].x +
-					 track_piece.coords[offset + 4].x + track_piece.coords[offset + 5].x) / 4.0;
-				const double z = piece_z +
-					(track_piece.coords[offset].z + track_piece.coords[offset + 1].z +
-					 track_piece.coords[offset + 4].z + track_piece.coords[offset + 5].z) / 4.0;
+				const double x = piece_x + (track_piece.coords[offset].x + track_piece.coords[offset + 1].x +
+				                            track_piece.coords[offset + 4].x + track_piece.coords[offset + 5].x) /
+				                               4.0;
+				const double z = piece_z + (track_piece.coords[offset].z + track_piece.coords[offset + 1].z +
+				                            track_piece.coords[offset + 4].z + track_piece.coords[offset + 5].z) /
+				                               4.0;
 				g_gameState.player_x = x;
 				g_gameState.player_z = z;
 				g_gameState.player_current_piece = piece;
 				CalculatePlayersRoadPosition(g_trackState, g_gameState);
-				all_segments_selected = all_segments_selected &&
-					g_gameState.player_current_piece == piece &&
-					g_gameState.player_current_segment == segment;
+				all_segments_selected = all_segments_selected && g_gameState.player_current_piece == piece &&
+				                        g_gameState.player_current_segment == segment;
 			}
 		}
 
-		log.check(all_segments_selected,
-		          "straight road samples use the containing segment");
+		log.check(all_segments_selected, "straight road samples use the containing segment");
 	}
 
 	// Every shortcut the menu advertises has to reach the game. The move onto
@@ -589,27 +560,24 @@ namespace
 		for (const auto& expected : bindings)
 		{
 			const auto found = std::ranges::find_if(items, [&](const ui::command_ptr& item)
-			{
-				return MenuCommandId(item) == expected.id;
-			});
-			log.check(found != items.end() && (*found)->kba.size() == 1 &&
-			          (*found)->kba.front().key == expected.key &&
-			          (*found)->kba.front().key_state == 0, expected.what);
+			{ return MenuCommandId(item) == expected.id; });
+			log.check(found != items.end() && (*found)->kba.size() == 1 && (*found)->kba.front().key == expected.key &&
+			              (*found)->kba.front().key_state == 0,
+			          expected.what);
 		}
 
 		bool labels_ok = true;
 		for (const auto& item : items)
 		{
 			if (item->text.find('\t') != std::string::npos ||
-				(!item->kba.empty() && item->keyboard_accelerator_text.empty()))
+			    (!item->kba.empty() && item->keyboard_accelerator_text.empty()))
 			{
 				labels_ok = false;
 			}
 		}
 		log.check(labels_ok, "menu labels keep accelerators in ui command metadata");
 
-		const auto f10_dispatched =
-			ui::dispatch_accelerator(BuildGameMenu(), platform::keys::F10, {});
+		const auto f10_dispatched = ui::dispatch_accelerator(BuildGameMenu(), platform::keys::F10, {});
 		log.check(f10_dispatched, "F10 dispatches through the drawn menu accelerator path");
 
 		const auto start = FindMenuItem(BuildGameMenu(), IDM_START_RACE);
@@ -634,7 +602,8 @@ namespace
 		restart->invoke();
 		log.check(g_gameMode == GAME_IN_PROGRESS && g_gameState.bNewGame, "Restart Race drops both cars again");
 		log.check(!g_gameState.raceFinished && g_gameState.lapNumber[PLAYER] == 0 &&
-		          g_gameState.lapNumber[OPPONENT] == 0, "Restart Race clears the finish and the lap count");
+		              g_gameState.lapNumber[OPPONENT] == 0,
+		          "Restart Race clears the finish and the lap count");
 		log.check(g_gameState.boostReserve == g_trackState.StandardBoost, "Restart Race refills the boost");
 	}
 
@@ -661,20 +630,19 @@ namespace
 		g_gameMode = GAME_IN_PROGRESS;
 		const auto pause = FindMenuItem(BuildGameMenu(), IDM_PAUSE);
 		log.check(run(pause) && GameIsPaused(), "P pauses a race");
-		log.check(run(FindMenuItem(BuildGameMenu(), IDM_BACK_TO_MENU)) &&
-		          g_gameMode == TRACK_MENU && !GameIsPaused(),
+		log.check(run(FindMenuItem(BuildGameMenu(), IDM_BACK_TO_MENU)) && g_gameMode == TRACK_MENU && !GameIsPaused(),
 		          "Esc from a paused race leaves the track menu running");
 
 		log.check(run(FindMenuItem(BuildGameMenu(), IDM_START_RACE)) && g_gameMode == TRACK_PREVIEW,
 		          "Start Race opens the preview");
 		log.check(run(FindMenuItem(BuildGameMenu(), IDM_PAUSE)) && GameIsPaused() &&
-		          run(FindMenuItem(BuildGameMenu(), IDM_START_RACE)) &&
-		          g_gameMode == GAME_IN_PROGRESS && !GameIsPaused(),
+		              run(FindMenuItem(BuildGameMenu(), IDM_START_RACE)) && g_gameMode == GAME_IN_PROGRESS &&
+		              !GameIsPaused(),
 		          "a race started from a paused preview runs");
 
 		log.check(run(FindMenuItem(BuildGameMenu(), IDM_PAUSE)) && GameIsPaused() &&
-		          run(FindMenuItem(BuildGameMenu(), IDM_RESTART_RACE)) &&
-		          g_gameMode == GAME_IN_PROGRESS && !GameIsPaused(),
+		              run(FindMenuItem(BuildGameMenu(), IDM_RESTART_RACE)) && g_gameMode == GAME_IN_PROGRESS &&
+		              !GameIsPaused(),
 		          "a race restarted while paused runs");
 
 		run(FindMenuItem(BuildGameMenu(), IDM_BACK_TO_MENU));
@@ -684,19 +652,10 @@ namespace
 	{
 		log.log("\n--- TestWindowPresentation ---\n");
 
-		log.check(GameWindowTitle(true) == "Stunt Car Racer",
-		          "a working audio device gives the normal title");
-		log.check(GameWindowTitle(false) == "Stunt Car Racer (no sound)",
-		          "a silent game gives the no-sound title");
+		log.check(GameWindowTitle(true) == "Stunt Car Racer", "a working audio device gives the normal title");
+		log.check(GameWindowTitle(false) == "Stunt Car Racer (no sound)", "a silent game gives the no-sound title");
 
-		const core::sizei screen{1920, 1080};
-		const auto bounds = GameWindowBounds(screen, 1.5);
-		log.check(bounds.width() == 960 && bounds.height() == 720,
-		          "the window is 960x720 at 1.5x DPI");
-		log.check(bounds.left == 480 && bounds.top == 180,
-		          "the scaled window is centred at 480,180");
-
-		// Close-box and Alt+F4 dispatch are ui::frame defaults, not application callbacks.
+		// Where the window opens, the close box and Alt+F4 are ui::shell defaults, not application callbacks.
 	}
 
 	// Minimising stands the race still but used to leave its engine droning:
@@ -711,8 +670,261 @@ namespace
 		log.check(!g_soundState.engineSoundPlaying, "a minimised race stops its engine");
 	}
 
-} // namespace
+	// ---- The scene: 3D faces drawn as 2D polygons by the painter's algorithm ----
 
+	constexpr uint32_t kRed = XRGB(255, 0, 0);
+	constexpr uint32_t kGreen = XRGB(0, 255, 0);
+	constexpr uint32_t kBlue = XRGB(0, 0, 255);
+
+	// A scene 200 pixels square, its eye at eye looking at at.
+	void SetUpScene(SceneRenderer& r, const Vec3& eye, const Vec3& at)
+	{
+		r.Resize(200, 200);
+		r.BeginFrame();
+		r.SetProjectionMatrix(Mat4PerspectiveFovLH(SCR_PI / 2.0, 1.0, 1.0, 10000.0));
+		r.SetViewMatrix(Mat4LookAtLH(eye, at, Vec3(0.0, 1.0, 0.0)));
+		r.SetWorldMatrix(Mat4::Identity());
+	}
+
+	// The polygons a scene draws, in order.
+	std::vector<ui::test::fake_draw_context::polygon_draw> DrawScene(SceneRenderer& r)
+	{
+		ui::test::fake_draw_context dc(core::recti(0, 0, 200, 200));
+		r.Draw(dc, {0, 0});
+		return dc.polygons;
+	}
+
+	// Lighting scales a colour's channels alike, so a pure red, green or blue face stays one.
+	bool IsColour(const ui::test::fake_draw_context::polygon_draw& p, const uint32_t colour)
+	{
+		const auto& c = p.style.fill.color;
+		return (c.r > 0.0f) == ((colour >> 16 & 0xFF) != 0) && (c.g > 0.0f) == ((colour >> 8 & 0xFF) != 0) &&
+		       (c.b > 0.0f) == ((colour & 0xFF) != 0);
+	}
+
+	// The twelve triangles of a box, half wound one way and half the other: a convex part needs neither.
+	std::vector<SceneVertex> Box(const Vec3& lo, const Vec3& hi, const uint32_t colour)
+	{
+		const Vec3 c[8] = {{lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {lo.x, hi.y, lo.z}, {hi.x, hi.y, lo.z},
+		                   {lo.x, lo.y, hi.z}, {hi.x, lo.y, hi.z}, {lo.x, hi.y, hi.z}, {hi.x, hi.y, hi.z}};
+		constexpr int faces[6][4] = {{0, 1, 3, 2}, {4, 6, 7, 5}, {0, 2, 6, 4},
+		                             {1, 5, 7, 3}, {0, 4, 5, 1}, {2, 3, 7, 6}};
+
+		std::vector<SceneVertex> vertices;
+		const auto add = [&](const int a, const int b, const int d)
+		{
+			for (const int i : {a, b, d}) vertices.push_back({c[i], colour, 0.0, 0.0});
+		};
+
+		for (int f = 0; f < 6; ++f)
+		{
+			add(faces[f][0], faces[f][1], faces[f][2]);
+			if (f % 2) add(faces[f][0], faces[f][3], faces[f][2]);
+			else add(faces[f][0], faces[f][2], faces[f][3]);
+		}
+
+		return vertices;
+	}
+
+	// The index of the first and last polygon of a colour, or -1.
+	std::pair<int, int> Span(const std::vector<ui::test::fake_draw_context::polygon_draw>& polygons,
+	                         const uint32_t colour)
+	{
+		int first = -1;
+		int last = -1;
+		for (int i = 0; i < static_cast<int>(polygons.size()); ++i)
+		{
+			if (!IsColour(polygons[i], colour)) continue;
+			if (first < 0) first = i;
+			last = i;
+		}
+		return {first, last};
+	}
+
+	void TestScenePainterOrder(Logger& log)
+	{
+		log.log("\n--- TestScenePainterOrder ---\n");
+
+		SceneRenderer r;
+		SetUpScene(r, Vec3(0, 0, 0), Vec3(0, 0, 1));
+
+		// The near triangle is drawn first; the far one, behind it, must come out first.
+		const SceneVertex nearTriangle[3] = {{{-20, -20, 50}, kRed, 0, 0},
+		                                     {{20, -20, 50}, kRed, 0, 0},
+		                                     {{0, 20, 50}, kRed, 0, 0}};
+		const SceneVertex farTriangle[3] = {{{-60, -60, 100}, kBlue, 0, 0},
+		                                    {{60, -60, 100}, kBlue, 0, 0},
+		                                    {{0, 60, 100}, kBlue, 0, 0}};
+		r.DrawTriangleList(nearTriangle, 0, 1);
+		r.DrawTriangleList(farTriangle, 0, 1);
+
+		const auto polygons = DrawScene(r);
+		log.check(polygons.size() == 2 && IsColour(polygons[0], kBlue) && IsColour(polygons[1], kRed),
+		          "the scene draws the farther face first, whatever order it was drawn in");
+		log.check(polygons.size() == 2 && !polygons[0].style.smooth,
+		          "faces are drawn with crisp edges, so neighbours meet with neither gap nor overlap");
+
+		// A face straddling the eye is cut at the near plane, and what is behind the eye is not drawn.
+		SetUpScene(r, Vec3(0, 0, 0), Vec3(0, 0, 1));
+		const SceneVertex straddling[3] = {{{-50, -10, -100}, kGreen, 0, 0},
+		                                   {{50, -10, -100}, kGreen, 0, 0},
+		                                   {{0, -10, 200}, kGreen, 0, 0}};
+		const SceneVertex behind[3] = {{{-50, 0, -100}, kRed, 0, 0},
+		                               {{50, 0, -100}, kRed, 0, 0},
+		                               {{0, 50, -50}, kRed, 0, 0}};
+		r.DrawTriangleList(straddling, 0, 1);
+		r.DrawTriangleList(behind, 0, 1);
+		const auto cut = DrawScene(r);
+		const bool onScreen = cut.size() == 1 && std::ranges::all_of(cut[0].points, [](const core::pointd p)
+		{ return std::isfinite(p.X) && std::isfinite(p.Y) && p.X > -200 && p.X < 400 && p.Y > -200 && p.Y < 400; });
+		log.check(onScreen && IsColour(cut[0], kGreen),
+		          "a face through the eye is cut to what is in front of it, near the frame");
+	}
+
+	void TestSceneObjectOnSurface(Logger& log)
+	{
+		log.log("\n--- TestSceneObjectOnSurface ---\n");
+
+		SceneRenderer r;
+		SetUpScene(r, Vec3(0, 150, -200), Vec3(0, 0, 200));
+
+		// A box resting on a stretch of road, drawn before the road.
+		const auto box = Box(Vec3(-20, 0, 180), Vec3(20, 40, 220), kRed);
+		r.BeginGroup(Placement::Nearest);
+		r.DrawConvexPart(box.data(), 0, 12);
+		r.EndGroup();
+
+		const SceneVertex road[6] = {{{-100, 0, 0}, kGreen, 0, 0},  {{100, 0, 0}, kGreen, 0, 0},
+		                             {{100, 0, 400}, kGreen, 0, 0}, {{-100, 0, 0}, kGreen, 0, 0},
+		                             {{100, 0, 400}, kGreen, 0, 0}, {{-100, 0, 400}, kGreen, 0, 0}};
+		r.BeginGroup(Placement::Farthest);
+		r.DrawTriangleList(road, 0, 2);
+		r.EndGroup();
+
+		const auto polygons = DrawScene(r);
+		const auto roadSpan = Span(polygons, kGreen);
+		const auto boxSpan = Span(polygons, kRed);
+		log.check(roadSpan.first >= 0 && boxSpan.first >= 0 && roadSpan.second < boxSpan.first,
+		          "a car placed by its nearest point comes after the road it rests on");
+	}
+
+	void TestSceneConvexParts(Logger& log)
+	{
+		log.log("\n--- TestSceneConvexParts ---\n");
+
+		SceneRenderer r;
+		const auto box = Box(Vec3(-50, -50, 250), Vec3(50, 50, 350), kRed);
+
+		SetUpScene(r, Vec3(0, 0, 0), Vec3(0, 0, 300));
+		r.DrawConvexPart(box.data(), 0, 12);
+		log.check(DrawScene(r).size() == 2, "a box seen face on draws the one face turned to the eye");
+
+		SetUpScene(r, Vec3(300, 300, 0), Vec3(0, 0, 300));
+		r.DrawConvexPart(box.data(), 0, 12);
+		log.check(DrawScene(r).size() == 6, "seen from a corner it draws three, however its faces are wound");
+
+		// A cabin on a long body, the eye just above the body's top and in front of it. The cabin's centre is
+		// farther than the body's, but the plane of the body's top separates them, and the eye is on the
+		// cabin's side of it: the body is drawn first.
+		SetUpScene(r, Vec3(0, 25, -400), Vec3(0, 20, 0));
+		const auto body = Box(Vec3(-100, 0, -200), Vec3(100, 20, 200), kBlue);
+		const auto cabin = Box(Vec3(-30, 20, 150), Vec3(30, 60, 190), kRed);
+		r.BeginGroup(Placement::Nearest);
+		r.DrawConvexPart(cabin.data(), 0, 12);
+		r.DrawConvexPart(body.data(), 0, 12);
+		r.EndGroup();
+		const auto polygons = DrawScene(r);
+		const auto bodySpan = Span(polygons, kBlue);
+		const auto cabinSpan = Span(polygons, kRed);
+		log.check(bodySpan.first >= 0 && cabinSpan.first >= 0 && bodySpan.second < cabinSpan.first,
+		          "a part on top of another is drawn after it, though its centre is farther");
+	}
+
+	void TestSceneRoadBands(Logger& log)
+	{
+		log.log("\n--- TestSceneRoadBands ---\n");
+
+		// Edge lines a quarter of the road wide each side of a grey road.
+		// clang-format off
+		const uint32_t row[8] = {kRed, kRed, XRGB(128, 128, 128), XRGB(128, 128, 128),
+		                         XRGB(128, 128, 128), XRGB(128, 128, 128), kRed, kRed};
+		// clang-format on
+		const auto texture = RoadTexture::FromRow(row, 8);
+		log.check(texture.bands.size() == 3 && texture.bands[1].u0 == 0.25 && texture.bands[1].u1 == 0.75,
+		          "a road texture is the runs of colour across its first row");
+
+		// A road square on to the eye: u runs from 0 at its left to 1 at its right.
+		SceneRenderer r;
+		SetUpScene(r, Vec3(0, 0, 0), Vec3(0, 0, 1));
+		const SceneVertex road[6] = {{{-100, -100, 100}, 0, 0, 0}, {{100, -100, 100}, 0, 1, 0},
+		                             {{100, 100, 100}, 0, 1, 0},   {{-100, -100, 100}, 0, 0, 0},
+		                             {{100, 100, 100}, 0, 1, 0},   {{-100, 100, 100}, 0, 0, 0}};
+		r.DrawTriangleList(road, 0, 2, &texture);
+
+		double greyLeft = 1e9;
+		double greyRight = -1e9;
+		int red = 0;
+		for (const auto& polygon : DrawScene(r))
+		{
+			if (IsColour(polygon, kRed))
+			{
+				++red;
+				continue;
+			}
+			for (const auto& p : polygon.points)
+			{
+				greyLeft = std::min(greyLeft, p.X);
+				greyRight = std::max(greyRight, p.X);
+			}
+		}
+
+		// The road fills the frame's 200 pixels across; the grey runs from a quarter to three quarters of it.
+		log.check(red > 0 && std::abs(greyLeft - 50.0) < 1e-6 && std::abs(greyRight - 150.0) < 1e-6,
+		          "each run is drawn where it falls across the road");
+	}
+
+	void TestSceneFrame(Logger& log)
+	{
+		log.log("\n--- TestSceneFrame ---\n");
+
+		CreateResources();
+		if (!ConvertAmigaTrack(g_trackState, LITTLE_RAMP))
+		{
+			log.check(false, "the frame has a track");
+			return;
+		}
+		CreateTrackVertexBuffer(g_trackState);
+		g_gameMode = TRACK_MENU;
+		AppStep({});
+
+		const auto canvas = std::make_shared<ui::canvas_element>([](render::draw_context& dc, const core::recti bounds)
+		{ AppDraw(dc, bounds); });
+		const auto frame = ui::render_to_surface(canvas, {320, 240}, core::color(0.0f, 0.0f, 0.0f, 1.0f));
+		if (!frame)
+		{
+			log.check(false, "the frame is drawn with no window");
+			return;
+		}
+
+		int sky = 0;
+		int ground = 0;
+		int other = 0;
+		for (int y = 0; y < 240; ++y)
+		{
+			const auto* line = reinterpret_cast<const uint32_t*>(frame->pixels_line(y));
+			for (int x = 0; x < 320; ++x)
+			{
+				const uint32_t pixel = line[x] | 0xFF000000;
+				if (pixel == SCRGB(SCR_BASE_COLOUR + 7)) ++sky;
+				else if (pixel == SCRGB(SCR_BASE_COLOUR + 13)) ++ground;
+				else ++other;
+			}
+		}
+		log.check(sky > 0 && ground > 0 && other > 320 * 240 / 50,
+		          "a track menu frame drawn with no window shows the sky, the ground and the track");
+	}
+
+} // namespace
 
 // Headless test entry point. Returns process exit code.
 int AppRunTests()
@@ -745,20 +957,22 @@ int AppRunTests()
 
 	// Run the chain-drop test on every track. Some tracks have elevated
 	// starting pieces; the bug we are chasing only manifests on those.
-	for (int t = 0; t < NUM_TRACKS; ++t)
-		TestChainDropOntoTrack(log, t);
+	for (int t = 0; t < NUM_TRACKS; ++t) TestChainDropOntoTrack(log, t);
 
-	for (int t = 0; t < NUM_TRACKS; ++t)
-		TestStraightSegmentSelection(log, t);
+	for (int t = 0; t < NUM_TRACKS; ++t) TestStraightSegmentSelection(log, t);
 
 	// Drive a lap on every track.
-	for (int t = 0; t < NUM_TRACKS; ++t)
-		TestDriveLapAroundTrack(log, t);
+	for (int t = 0; t < NUM_TRACKS; ++t) TestDriveLapAroundTrack(log, t);
 
 	TestMenuShortcuts(log);
 	TestPauseEndsWithRace(log);
 	TestWindowPresentation(log);
 	TestMinimizeSilencesEngine(log);
+	TestScenePainterOrder(log);
+	TestSceneObjectOnSurface(log);
+	TestSceneConvexParts(log);
+	TestSceneRoadBands(log);
+	TestSceneFrame(log);
 
 	log.log("\n==========================\n");
 	log.log("Total checks: %d\nTotal failures: %d\n", log.checks, log.failures);
